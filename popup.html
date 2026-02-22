@@ -1,52 +1,28 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
-<head>
-  <title>Browsing Dashboard</title>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      width: 280px;
-      padding: 10px;
-    }
-    h2 {
-      margin-bottom: 8px;
-    }
-    .stat {
-      margin: 6px 0;
-    }
-    button {
-      margin-top: 10px;
-      width: 100%;
-    }
-    .session {
-      border-top: 1px solid #ccc;
-      margin-top: 8px;
-      padding-top: 6px;
-      cursor: pointer;
-    }
-    .details {
-      font-size: 12px;
-      margin-left: 10px;
-    }
-  </style>
-</head>
+  <head>
+    <meta charset="utf-8" />
+    <title>Screen Time Momentum</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
 
-<body>
-  <h2>Browsing Dashboard</h2>
+  <body class="popup-min">
+    <h1>Current Session</h1>
 
-  <div class="stat">Total sessions: <span id="totalSessions"></span></div>
-  <div class="stat">Avg session (min): <span id="avgSession"></span></div>
-  <div class="stat">Longest session (min): <span id="longestSession"></span></div>
+    <div class="card">
+      <div class="big" id="elapsed">0:00</div>
 
-  <div class="stat">
-    Top sites:
-    <ul id="topSites"></ul>
-  </div>
+      <div class="meta">
+        <div><strong>Sites visited:</strong> <span id="sitesCount">0</span></div>
+        <div class="tiny" id="sitesList">No session yet.</div>
+      </div>
+    </div>
 
-  <button id="toggleDetails">View Session Details</button>
+    <div class="row">
+      <button id="openDashboard">Dashboard</button>
+      <button id="clearData" class="danger">Clear</button>
+    </div>
 
-  <div id="sessions" style="display:none;"></div>
-
-  <script src="popup.js"></script>
-</body>
+    <script src="popup.js"></script>
+  </body>
 </html>

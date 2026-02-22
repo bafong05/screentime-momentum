@@ -1,0 +1,75 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Screen Time Momentum — Dashboard</title>
+    <link rel="stylesheet" href="dashboard.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>Screen Time Momentum</h1>
+        <div class="sub">Dashboard</div>
+      </div>
+
+      <div class="topActions">
+        <button id="refreshBtn" class="btn ghost">Refresh</button>
+        <button id="clearBtn" class="btn danger">Clear data</button>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <section class="grid">
+        <div class="card">
+          <div class="label">Current session</div>
+          <div class="big" id="elapsed">0:00</div>
+          <div class="rowLine">
+            <div><strong>Sites visited:</strong> <span id="sitesCount">0</span></div>
+            <div class="pill" id="idlePill">Active</div>
+          </div>
+          <div class="muted" id="sitesList">—</div>
+        </div>
+
+        <div class="card">
+          <div class="label">Today</div>
+          <div class="kpiGrid">
+            <div class="kpi">
+              <div class="kpiLabel">Total time</div>
+              <div class="kpiValue" id="todayTime">—</div>
+            </div>
+            <div class="kpi">
+              <div class="kpiLabel">Sessions</div>
+              <div class="kpiValue" id="todaySessions">—</div>
+            </div>
+            <div class="kpi">
+              <div class="kpiLabel">Top site</div>
+              <div class="kpiValue small" id="todayTopSite">—</div>
+            </div>
+            <div class="kpi">
+              <div class="kpiLabel">Visits</div>
+              <div class="kpiValue" id="todayVisits">—</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="grid2">
+        <div class="card">
+          <div class="label">Recent sessions</div>
+          <div id="sessionsList" class="sessionsList">
+            <div class="muted">Loading…</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="label">Top sites today</div>
+          <div id="topSitesList" class="list">
+            <div class="muted">Loading…</div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="dashboard.js"></script>
+  </body>
+</html>

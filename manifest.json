@@ -1,13 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "Screen Momentum Tracker",
-  "version": "1.0",
-  "description": "Tracks browsing sessions and momentum",
-  "permissions": ["tabs", "storage"],
-  "background": {
-    "service_worker": "background.js"
-  },
-  "action": {
-    "default_popup": "popup.html"
-  }
+  "name": "Screen Time Momentum",
+  "version": "0.1.0",
+  "description": "Tracks browsing visits and groups them into sessions.",
+  "permissions": ["tabs", "storage", "webNavigation"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html" }
 }

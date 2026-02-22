@@ -1,77 +1,39 @@
-let showingDetails = false;
+function fmtElapsed(ms) {
+  ms = Math.max(0, ms);
+  const totalSeconds = Math.floor(ms / 1000);
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
 
-chrome.storage.local.get(["sessions"], (result) => {
-  const sessions = result.sessions || [];
+async function refresh() {
+  const { activeSession } = await chrome.storage.local.get(["activeSession"]);
 
-  document.getElementById("totalSessions").innerText = sessions.length;
+  if (!activeSession) {
+    document.getElementById("elapsed").textContent = "0:00";
+    document.getElementById("sitesCount").textContent = "0";
+    document.getElementById("sitesList").textContent = "No session yet.";
+    return;
+  }
 
-  if (sessions.length === 0) return;
+  const now = Date.now();
+  document.getElementById("elapsed").textContent = fmtElapsed(now - activeSession.startTime);
+  document.getElementById("sitesCount").textContent = String(activeSession.uniqueDomains?.length || 0);
 
-  let totalDuration = 0;
-  let longest = 0;
-  const siteCounts = {};
+  const domains = activeSession.uniqueDomains || [];
+  const list = domains.slice(0, 6).join(", ");
+  document.getElementById("sitesList").textContent =
+    domains.length === 0 ? "—" : domains.length > 6 ? `${list}…` : list;
+}
 
-  sessions.forEach((session) => {
-    const duration = (session.end - session.start) / 60000;
-    totalDuration += duration;
-    longest = Math.max(longest, duration);
-
-    session.sites.forEach((site) => {
-      siteCounts[site] = (siteCounts[site] || 0) + 1;
-    });
-  });
-
-  document.getElementById("avgSession").innerText =
-    Math.round(totalDuration / sessions.length);
-  document.getElementById("longestSession").innerText =
-    Math.round(longest);
-
-  const topSites = Object.entries(siteCounts)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 3);
-
-  const list = document.getElementById("topSites");
-  list.innerHTML = "";
-  topSites.forEach(([site, count]) => {
-    const li = document.createElement("li");
-    li.innerText = `${site} (${count})`;
-    list.appendChild(li);
-  });
-
-  // DETAILS TOGGLE
-  const button = document.getElementById("toggleDetails");
-  const container = document.getElementById("sessions");
-
-  button.addEventListener("click", () => {
-    showingDetails = !showingDetails;
-    container.style.display = showingDetails ? "block" : "none";
-    button.innerText = showingDetails
-      ? "Hide Session Details"
-      : "View Session Details";
-
-    if (showingDetails) renderSessions(sessions, container);
-  });
+document.getElementById("openDashboard").addEventListener("click", () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL("dashboard.html") });
 });
 
-function renderSessions(sessions, container) {
-  container.innerHTML = "";
+document.getElementById("clearData").addEventListener("click", async () => {
+  await chrome.storage.local.set({ visits: [], sessions: [], activeSession: null });
+  await refresh();
+});
 
-  sessions.forEach((session, index) => {
-    const div = document.createElement("div");
-    div.className = "session";
-
-    const start = new Date(session.start).toLocaleTimeString();
-    const end = new Date(session.end).toLocaleTimeString();
-    const duration = Math.round((session.end - session.start) / 60000);
-
-    div.innerHTML = `
-      <strong>Session ${index + 1}</strong><br>
-      ${start} → ${end} (${duration} min)
-      <div class="details">
-        ${session.sites.join(" → ")}
-      </div>
-    `;
-
-    container.appendChild(div);
-  });
-}
+refresh();
+setInterval(refresh, 1000);
