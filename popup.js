@@ -67,8 +67,8 @@ document.getElementById("newSession").addEventListener("click", async () => {
   const value = raw != null ? Number(raw.trim()) : NaN;
 
   if (raw && Number.isFinite(value) && value > 0) {
-    const filtered = intents.filter((i) => i.startTime !== now);
-    filtered.push({ startTime: now, intendedMinutes: value });
+    const filtered = intents.filter((i) => i.sessionId !== newSession.id);
+    filtered.push({ sessionId: newSession.id, intendedMinutes: value });
     newSession.intendedMinutes = value;
     await chrome.storage.local.set({
       activeSession: newSession,
@@ -84,4 +84,8 @@ document.getElementById("newSession").addEventListener("click", async () => {
 });
 
 refresh();
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local") return;
+  if (changes.activeSession) refresh();
+});
 setInterval(refresh, 1000);

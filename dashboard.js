@@ -1,5 +1,10 @@
 const INACTIVITY_THRESHOLD_MS = 15 * 60 * 1000; // keep in sync with background.js
 
+function faviconUrl(domain, size = 32) {
+  // Uses Google’s favicon service
+  return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=${size}`;
+}
+
 function fmtElapsed(ms) {
   ms = Math.max(0, ms);
   const totalSeconds = Math.floor(ms / 1000);
@@ -103,19 +108,21 @@ function renderSessionsList(sessions) {
       const visitsLabel = `${s.metrics.totalVisits || 0} visits`;
 
       const intendedMinutes = s.metrics.intendedMinutes;
-      const intentLabel =
-        intendedMinutes != null ? `Intended duration: ${intendedMinutes}m` : null;
-
       const overrunMs = s.metrics.overrunMs ?? null;
-      const overLabel =
-        intendedMinutes != null && overrunMs && overrunMs > 0
-          ? `+${msToPretty(overrunMs)} over`
-          : null;
 
-      const metaPieces = [durationLabel, sitesLabel, visitsLabel];
-      if (intentLabel) metaPieces.push(intentLabel);
-      if (overLabel) metaPieces.push(overLabel);
-      const metaStr = metaPieces.join(" · ");
+      const metaStr = [durationLabel, sitesLabel, visitsLabel].join(" · ");
+
+      const intentBlock =
+        intendedMinutes != null
+          ? `<div class="sessionIntent">
+              Intended: ${intendedMinutes}m
+              ${
+                overrunMs && overrunMs > 0
+                  ? `<span class="sessionOverrun">(+${msToPretty(overrunMs)} over)</span>`
+                  : ""
+              }
+            </div>`
+          : "";
 
       const isExpanded = expandedSessionStarts.has(s.metrics.start);
       // Show most recent visit at the top of the list
@@ -123,16 +130,39 @@ function renderSessionsList(sessions) {
       const visitsHtml = visits
         .map(
           (v) =>
-            `<div class="sessionVisit"><span class="sessionVisitTime">${fmtTime(v.time)}</span><span class="sessionVisitDomain">${v.domain}</span></div>`
+            `<div class="sessionVisit">
+              <img
+                class="favicon"
+                src="${faviconUrl(v.domain, 32)}"
+                alt=""
+                loading="lazy"
+                referrerpolicy="no-referrer"
+                onerror="this.style.visibility='hidden';"
+              />
+
+              <span class="sessionVisitTime">${fmtTime(v.time)}</span>
+
+              <a
+                class="sessionVisitDomain"
+                href="https://${v.domain}"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                ${v.domain}
+              </a>
+            </div>`
         )
         .join("");
+
       return `
         <div class="sessionRow" data-session-start="${s.metrics.start}">
           <button type="button" class="sessionRowBtn" aria-expanded="${isExpanded}">
             <span class="sessionRowTime">${timeLabel}</span>
             <span class="sessionRowMeta">${metaStr}</span>
-            <span class="sessionRowChevron" aria-hidden="true">${isExpanded ? "▼" : "▶"}</span>
+            <span class="sessionRowChevron">${isExpanded ? "▼" : "▶"}</span>
           </button>
+      
+          ${intentBlock}
           <div class="sessionDetails" ${isExpanded ? "" : "hidden"}>
             <div class="sessionDetailsInner">${visitsHtml || '<div class="muted">No visits recorded.</div>'}</div>
           </div>
@@ -185,7 +215,12 @@ function renderTopSitesToday(timePerDomain, visitsPerDomain) {
       return `
         <div class="listRow">
           <div class="listMain">
-            <div class="listTitle">${domain}</div>
+            <a class="listTitle"
+              href="https://${domain}"
+              target="_blank"
+              rel="noopener noreferrer">
+              ${domain}
+            </a>
             <div class="listMeta">${visits} visits</div>
           </div>
           <div class="listRight">${msToPretty(ms)}</div>
@@ -261,8 +296,8 @@ document.getElementById("newSessionBtn").addEventListener("click", async () => {
   const value = raw != null ? Number(raw.trim()) : NaN;
 
   if (raw && Number.isFinite(value) && value > 0) {
-    const filtered = intents.filter((i) => i.startTime !== now);
-    filtered.push({ startTime: now, intendedMinutes: value });
+    const filtered = intents.filter((i) => i.sessionId !== newSession.id);
+    filtered.push({ sessionId: newSession.id, intendedMinutes: value });
     newSession.intendedMinutes = value;
     await chrome.storage.local.set({
       activeSession: newSession,
@@ -289,4 +324,8 @@ document.getElementById("clearBtn").addEventListener("click", async () => {
 });
 
 refresh();
-setInterval(refresh, 2000);
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local") return;
+  if (changes.sessions || changes.activeSession || changes.visits) refresh();
+});
+setInterval(refresh, 1000);
