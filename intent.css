@@ -14,21 +14,21 @@
   min-height: 100vh;
   display: grid;
   place-items: center;
-  padding: 32px 20px;
+  padding: 20px 16px;
 }
 
 .intentCard {
-  width: min(560px, 100%);
-  padding: 28px;
-  border-radius: 28px;
+  width: min(420px, 100%);
+  padding: 20px;
+  border-radius: 24px;
   background: rgba(255, 255, 255, 0.96);
   border: 1px solid rgba(125, 52, 216, 0.08);
-  box-shadow: 0 24px 80px rgba(86, 46, 146, 0.12);
+  box-shadow: 0 18px 52px rgba(86, 46, 146, 0.12);
 }
 
 .intentEyebrow {
-  margin-bottom: 10px;
-  font-size: 13px;
+  margin-bottom: 8px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -37,14 +37,14 @@
 
 .intentCard h1 {
   margin: 0;
-  font-size: clamp(32px, 5vw, 44px);
-  line-height: 1;
-  letter-spacing: -0.04em;
+  font-size: clamp(24px, 4vw, 32px);
+  line-height: 1.05;
+  letter-spacing: -0.03em;
 }
 
 .intentHint {
-  margin: 12px 0 24px;
-  font-size: 18px;
+  margin: 10px 0 18px;
+  font-size: 15px;
   color: #5f6373;
 }
 
@@ -61,11 +61,11 @@
   background: #fff;
   color: #1b1f2f;
   cursor: pointer;
-  font-size: 22px;
+  font-size: 16px;
   font-weight: 800;
   letter-spacing: -0.02em;
-  min-height: 74px;
-  padding: 18px 20px;
+  min-height: 58px;
+  padding: 14px 16px;
 }
 
 .intentOption:hover,
@@ -75,13 +75,13 @@
 }
 
 .intentOther {
-  margin-top: 18px;
+  margin-top: 14px;
 }
 
 .intentOtherLabel {
   display: block;
-  margin-bottom: 10px;
-  font-size: 14px;
+  margin-bottom: 8px;
+  font-size: 12px;
   font-weight: 700;
   color: #5f6373;
   text-transform: uppercase;
@@ -97,16 +97,16 @@
 #sessionNameInput,
 #otherIntentInput {
   width: 100%;
-  min-height: 64px;
-  padding: 0 18px;
+  min-height: 52px;
+  padding: 0 16px;
   border: 1px solid rgba(125, 52, 216, 0.16);
   border-radius: 18px;
   background: #fff;
-  font-size: 22px;
+  font-size: 16px;
 }
 
 #applyOtherIntent {
-  min-width: 108px;
+  min-width: 92px;
 }
 
 @media (max-width: 640px) {

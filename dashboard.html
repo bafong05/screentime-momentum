@@ -54,6 +54,7 @@
                   <div class="panelHint">Click "New Session" to set a goal.</div>
                 </div>
                 <div class="headerActions">
+                  <button id="stopSessionBtn" class="btn secondary">Stop Session</button>
                   <button id="newSessionBtn" class="btn primary">New Session</button>
                 </div>
               </div>
@@ -148,6 +149,29 @@
                   <span class="assistantComposerText">Ask about your browsing patterns...</span>
                   <button class="btn primary assistantComposerBtn" type="button" disabled>Coming Soon</button>
                 </div>
+              </div>
+            </article>
+
+            <article class="panelCard footprintConceptCard">
+              <div class="panelHeader">
+                <div>
+                  <div class="label">Digital footprint map</div>
+                  <div class="panelHint">A concept for showing where your browsing usually comes from and goes next</div>
+                </div>
+              </div>
+              <div class="footprintControls">
+                <label class="footprintControlLabel" for="footprintSiteInput">Anchor site</label>
+                <input
+                  id="footprintSiteInput"
+                  class="historySearchInput footprintSiteSelect"
+                  list="footprintSiteOptions"
+                  placeholder="Search for a site"
+                  autocomplete="off"
+                />
+                <datalist id="footprintSiteOptions"></datalist>
+              </div>
+              <div id="footprintExplorer" class="footprintExplorer">
+                <div class="muted">Loading path map...</div>
               </div>
             </article>
 
@@ -355,6 +379,22 @@
                             <small>About 10 seconds after a session starts without a chosen duration.</small>
                           </span>
                           <button class="btn secondary notificationTestBtn" type="button" data-notification-test="missingGoal">Test</button>
+                        </label>
+                        <label class="notificationPreference notificationPreferenceWithSelect">
+                          <input id="notifyNoGoalHourly" type="checkbox" />
+                          <span>
+                            <strong>No goal hourly reminder</strong>
+                            <small class="notificationPreferenceInlineDetail">
+                              <span>When a session is set to No goal, remind me</span>
+                              <select id="noGoalHourlyInterval" class="notificationIntervalSelect">
+                                <option value="0.25">Every 15 minutes</option>
+                                <option value="0.5">Every 30 minutes</option>
+                                <option value="1">Every 1 hour</option>
+                                <option value="2">Every 2 hours</option>
+                              </select>
+                            </small>
+                          </span>
+                          <button class="btn secondary notificationTestBtn" type="button" data-notification-test="noGoalHourly">Test</button>
                         </label>
                         <label class="notificationPreference">
                           <input id="notifySessionEnded" type="checkbox" />

@@ -1,6 +1,7 @@
 const DEFAULT_INACTIVITY_THRESHOLD_MINUTES = 10;
 let inactivityThresholdMs = DEFAULT_INACTIVITY_THRESHOLD_MINUTES * 60 * 1000;
 let browserIdleState = "active";
+let chromeAppFocused = true;
 
 function normalizeInactivityThresholdMinutes(value) {
   const minutes = Number(value);
@@ -34,6 +35,7 @@ async function getNotificationPreferences() {
     endingSoon: notificationPreferences?.endingSoon !== false,
     overrun: notificationPreferences?.overrun !== false,
     missingGoal: notificationPreferences?.missingGoal !== false,
+    noGoalHourly: notificationPreferences?.noGoalHourly !== false,
     sessionEnded: notificationPreferences?.sessionEnded !== false
   };
 }
@@ -49,6 +51,8 @@ const SESSION_OVERRUN_ALARM = "session-overrun-check";
 const SESSION_GOAL_REMINDER_ALARM = "session-goal-reminder";
 const SESSION_ENDING_SOON_ALARM = "session-ending-soon";
 const NO_GOAL_REMINDER_DELAY_MS = 10 * 1000;
+const DEFAULT_NO_GOAL_HOURLY_INTERVAL_HOURS = 1;
+const NO_GOAL_INTERVAL_OPTIONS_HOURS = [0.25, 0.5, 1, 2];
 
 function isIdleStateInactive(state) {
   return state === "idle" || state === "locked";
@@ -58,6 +62,26 @@ function setIdleDetectionInterval() {
   try {
     chrome.idle.setDetectionInterval(getIdleDetectionSeconds());
   } catch {}
+}
+
+function normalizeNoGoalHourlyIntervalHours(value) {
+  const hours = Number(value);
+  if (!Number.isFinite(hours)) return DEFAULT_NO_GOAL_HOURLY_INTERVAL_HOURS;
+  if (NO_GOAL_INTERVAL_OPTIONS_HOURS.includes(hours)) return hours;
+  return DEFAULT_NO_GOAL_HOURLY_INTERVAL_HOURS;
+}
+
+async function getNoGoalHourlyIntervalHours() {
+  const { noGoalHourlyIntervalHours } = await chrome.storage.local.get(["noGoalHourlyIntervalHours"]);
+  return normalizeNoGoalHourlyIntervalHours(noGoalHourlyIntervalHours);
+}
+
+function formatNoGoalIntervalLabel(hours) {
+  if (hours < 1) {
+    const minutes = Math.round(hours * 60);
+    return minutes === 1 ? "1 minute" : `${minutes} minutes`;
+  }
+  return hours === 1 ? "1 hour" : `${hours} hours`;
 }
 
 function queryIdleState(seconds = getIdleDetectionSeconds()) {
@@ -198,8 +222,14 @@ function shouldIgnoreUrl(url) {
   if (!url) return true;
 
   try {
-    new URL(url);
-    return false;
+    const parsed = new URL(url);
+    return [
+      "data:",
+      "blob:",
+      "javascript:",
+      "about:",
+      "devtools:"
+    ].includes(parsed.protocol);
   } catch {
     return true;
   }
@@ -308,6 +338,10 @@ function createBasicNotification(id, title, message) {
 }
 
 async function markSessionNotificationSent(sessionId, key) {
+  return markSessionNotificationValue(sessionId, key, true);
+}
+
+async function markSessionNotificationValue(sessionId, key, value) {
   if (!sessionId || !key) return;
 
   const {
@@ -319,14 +353,14 @@ async function markSessionNotificationSent(sessionId, key) {
   if (activeSession?.id === sessionId) {
     updates.activeSession = {
       ...activeSession,
-      [key]: true
+      [key]: value
     };
   }
 
   if (analyticsActiveSession?.id === sessionId) {
     updates.analyticsActiveSession = {
       ...analyticsActiveSession,
-      [key]: true
+      [key]: value
     };
   }
 
@@ -434,14 +468,41 @@ async function rebuildAnalyticsSessions() {
   });
 }
 
+async function stopCurrentSession() {
+  const {
+    activeSession,
+    analyticsActiveSession
+  } = await chrome.storage.local.get(["activeSession", "analyticsActiveSession"]);
+
+  if (!activeSession && !analyticsActiveSession) {
+    return { ok: true, stopped: false };
+  }
+
+  await chrome.storage.local.set({
+    activeSession: null,
+    analyticsActiveSession: null,
+    lastUserActivityAt: Date.now()
+  });
+
+  lastOverrunNotificationSessionId = null;
+  lastGoalReminderSessionId = null;
+  lastEndingSoonNotificationSessionId = null;
+  lastSessionEndedNotificationSessionId = null;
+
+  await rebuildSessions();
+  await rebuildAnalyticsSessions();
+  return { ok: true, stopped: true };
+}
+
 async function promptForAutoSessionIntent(sessionId) {
   if (!sessionId || lastPromptedAutoSessionId === sessionId) return;
+  if (!chromeAppFocused) return;
 
   lastPromptedAutoSessionId = sessionId;
 
   try {
     await chrome.windows.create({
-      url: chrome.runtime.getURL("popup.html?intent=auto"),
+      url: chrome.runtime.getURL("intent.html?mode=auto"),
       type: "popup",
       width: 360,
       height: 520,
@@ -620,6 +681,44 @@ async function maybeNotifyMissingGoal(activeSession) {
   } catch {}
 }
 
+async function maybeNotifyNoGoalHourly(activeSession) {
+  if (!activeSession?.id) return;
+  if (activeSession.goalSelectionMade !== true) return;
+  if (activeSession.intendedMinutes != null) return;
+
+  const preferences = await getNotificationPreferences();
+  if (!preferences.noGoalHourly) return;
+  if (isIdleStateInactive(await refreshIdleState()) && !videoPlaying) return;
+
+  const now = Date.now();
+  const sessionStart = Number(activeSession.startTime || now);
+  const elapsedMs = Math.max(0, now - sessionStart);
+  const intervalHours = await getNoGoalHourlyIntervalHours();
+  const elapsedHours = Math.floor(elapsedMs / (60 * 60 * 1000));
+  const completedMilestones = Math.floor(elapsedHours / intervalHours);
+  if (completedMilestones < 1) return;
+
+  const alreadySentMilestones = Number(activeSession.noGoalHourNotificationCount || 0);
+  if (completedMilestones <= alreadySentMilestones) return;
+
+  const milestoneHours = completedMilestones * intervalHours;
+  const hourLabel = formatNoGoalIntervalLabel(milestoneHours);
+
+  try {
+    const result = await createBasicNotification(
+      `session-no-goal-hourly-${activeSession.id}-${milestoneHours}`,
+      `You are ${hourLabel} in`,
+      "This session is still set to No goal."
+    );
+    if (!result?.ok) return;
+    await markSessionNotificationValue(
+      String(activeSession.id),
+      "noGoalHourNotificationCount",
+      completedMilestones
+    );
+  } catch {}
+}
+
 async function maybeNotifySessionEndingSoon(activeSession) {
   if (!activeSession?.id || activeSession?.intendedMinutes == null) return;
   const preferences = await getNotificationPreferences();
@@ -700,6 +799,7 @@ async function runSessionMonitorTick() {
       await maybeNotifySessionEndingSoon(active);
       await maybeNotifySessionOverrun(active);
       await maybeNotifyMissingGoal(active);
+      await maybeNotifyNoGoalHourly(active);
     }
   }
 
@@ -722,6 +822,8 @@ function ensureSessionMonitorAlarm() {
 
 async function resumeFromActiveTab(source = "activity-resume") {
   try {
+    if (!chromeAppFocused) return false;
+
     const { activeSession } = await chrome.storage.local.get(["activeSession"]);
     if (activeSession?.id) return false;
 
@@ -771,6 +873,8 @@ function scheduleActiveSessionAlarms(activeSession) {
 }
 
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+  if (!chromeAppFocused) return;
+
   try {
     const tab = await chrome.tabs.get(tabId);
     if (tab?.url) {
@@ -780,6 +884,7 @@ chrome.tabs.onActivated.addListener(async ({ tabId }) => {
 });
 
 chrome.webNavigation.onCommitted.addListener(async (details) => {
+  if (!chromeAppFocused) return;
   if (details.frameId !== 0) return;
   if (!details.url) return;
 
@@ -902,6 +1007,14 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
+chrome.windows.onFocusChanged.addListener((windowId) => {
+  chromeAppFocused = windowId !== chrome.windows.WINDOW_ID_NONE;
+
+  if (chromeAppFocused) {
+    resumeFromActiveTab("chrome-focus-resume").catch(() => {});
+  }
+});
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === "userActivity") {
@@ -950,26 +1063,43 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === "stopCurrentSession") {
+    stopCurrentSession()
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: String(error) }));
+
+    return true;
+  }
+
   if (msg.type === "testNotificationPreview") {
     const kind = msg.kind;
-    let title = "Screen Time Momentum";
-    let message = "Test notification.";
+    const sendPreview = async () => {
+      let title = "Screen Time Momentum";
+      let message = "Test notification.";
 
-    if (kind === "endingSoon") {
-      title = "Your session is ending soon";
-      message = "You have about 2 minutes left before reaching your intended browsing duration.";
-    } else if (kind === "overrun") {
-      title = "Over intended time";
-      message = "You have now exceeded your intended browsing duration.";
-    } else if (kind === "missingGoal") {
-      title = "No goal selected";
-      message = "This current session has no goal. Start a new session to set a goal or choose No goal.";
-    } else if (kind === "sessionEnded") {
-      title = "Your session has ended";
-      message = "This session ended because no activity was detected before your inactivity threshold.";
-    }
+      if (kind === "endingSoon") {
+        title = "Your session is ending soon";
+        message = "You have about 2 minutes left before reaching your intended browsing duration.";
+      } else if (kind === "overrun") {
+        title = "Over intended time";
+        message = "You have now exceeded your intended browsing duration.";
+      } else if (kind === "missingGoal") {
+        title = "No goal selected";
+        message = "This current session has no goal. Start a new session to set a goal or choose No goal.";
+      } else if (kind === "noGoalHourly") {
+        const intervalHours = await getNoGoalHourlyIntervalHours();
+        const hourLabel = formatNoGoalIntervalLabel(intervalHours);
+        title = `You are ${hourLabel} in`;
+        message = "This session is still set to No goal.";
+      } else if (kind === "sessionEnded") {
+        title = "Your session has ended";
+        message = "This session ended because no activity was detected before your inactivity threshold.";
+      }
 
-    createBasicNotification(`test-preview-${kind}-${Date.now()}`, title, message)
+      return createBasicNotification(`test-preview-${kind}-${Date.now()}`, title, message);
+    };
+
+    sendPreview()
       .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: String(error) }));
 
@@ -998,6 +1128,11 @@ ensureSessionMonitorAlarm();
 chrome.storage.local.get(["activeSession"]).then(({ activeSession }) => {
   scheduleActiveSessionAlarms(activeSession || null);
 }).catch(() => {});
+chrome.windows.getLastFocused().then((window) => {
+  chromeAppFocused = Boolean(window?.id) && window.id !== chrome.windows.WINDOW_ID_NONE;
+}).catch(() => {
+  chromeAppFocused = true;
+});
 loadInactivityThreshold().catch(() => {});
 refreshIdleState().catch(() => {});
 
@@ -1006,7 +1141,9 @@ chrome.idle.onStateChanged.addListener((state) => {
   if (state === "active") {
     (async () => {
       await setLastUserActivity(Date.now());
-      await resumeFromActiveTab("idle-resume");
+      if (chromeAppFocused) {
+        await resumeFromActiveTab("idle-resume");
+      }
     })().catch(() => {});
     return;
   }

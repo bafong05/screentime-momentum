@@ -1022,6 +1022,345 @@ body {
   cursor: default;
 }
 
+.footprintConceptCard {
+  width: min(100%, 1040px);
+  margin: 0 auto;
+}
+
+.footprintControls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.footprintControlLabel {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.footprintSiteSelect {
+  max-width: 320px;
+}
+
+.footprintExplorer {
+  display: grid;
+  gap: 16px;
+  position: relative;
+}
+
+.footprintCharts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.footprintChart {
+  display: grid;
+  gap: 12px;
+}
+
+.footprintChartHeader {
+  display: grid;
+  gap: 4px;
+}
+
+.footprintChartTitle {
+  font-size: 15px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+}
+
+.footprintChartHint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.footprintMapMockup {
+  position: relative;
+  min-height: 340px;
+  padding: 18px;
+  border: 1px solid #ece7ff;
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at top left, rgba(196, 181, 253, 0.18), transparent 34%),
+    radial-gradient(circle at bottom right, rgba(221, 214, 254, 0.28), transparent 32%),
+    linear-gradient(180deg, #fdfcff 0%, #f7f4ff 100%);
+  overflow: hidden;
+}
+
+.footprintSvg {
+  width: 100%;
+  height: 100%;
+  pointer-events: auto;
+}
+
+.footprintAnchorBadge {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  gap: 2px;
+  min-width: 132px;
+  padding: 10px 12px;
+  border-radius: 18px;
+  background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);
+  color: white;
+  box-shadow: 0 16px 32px rgba(109, 40, 217, 0.24);
+}
+
+.footprintAnchorBadgeOutgoing {
+  left: 14px;
+  bottom: 14px;
+}
+
+.footprintAnchorBadgeIncoming {
+  top: 14px;
+  right: 14px;
+}
+
+.footprintAnchorBadgeTitle {
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.footprintAnchorBadgeMeta {
+  font-size: 11px;
+  line-height: 1.3;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.footprintNode,
+.footprintCenterNode {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(139, 92, 246, 0.12);
+  box-shadow: 0 14px 30px rgba(109, 40, 217, 0.08);
+  backdrop-filter: blur(6px);
+}
+
+.footprintNodeSmall {
+  width: min(100%, 156px);
+}
+
+.footprintAnchorNode,
+.footprintBranch {
+  position: absolute;
+  z-index: 1;
+}
+
+.footprintAnchorNode {
+  width: 170px;
+  min-height: 96px;
+}
+
+.footprintNodeLabel,
+.footprintCenterTitle {
+  font-weight: 750;
+  letter-spacing: -0.02em;
+}
+
+.footprintNodeLabel {
+  font-size: 14px;
+}
+
+.footprintCenterTitle {
+  font-size: 18px;
+}
+
+.footprintNodeMeta,
+.footprintCenterMeta {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.footprintCenter {
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+  z-index: 1;
+}
+
+.footprintCenterNode,
+.footprintAnchorNode {
+  place-items: center;
+  text-align: center;
+  background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);
+  color: white;
+  border-color: transparent;
+}
+
+.footprintCenterNode .footprintCenterMeta {
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.footprintLoops {
+  display: flex;
+  justify-content: center;
+}
+
+.footprintLoopBadge {
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid #e7ddff;
+  color: var(--purple);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.footprintLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.footprintLegendDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  display: inline-block;
+  margin-right: 6px;
+  background: #7c3aed;
+}
+
+.footprintAxis {
+  fill: none;
+  stroke: rgba(109, 40, 217, 0.16);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+.footprintLink {
+  fill: none;
+  stroke-linecap: round;
+}
+
+.footprintLinkStrong {
+  stroke: rgba(109, 40, 217, 0.55);
+  stroke-width: 6;
+}
+
+.footprintLinkMedium {
+  stroke: rgba(109, 40, 217, 0.34);
+  stroke-width: 4;
+}
+
+.footprintLinkLight {
+  stroke: rgba(109, 40, 217, 0.18);
+  stroke-width: 3;
+}
+
+.footprintLoopStroke {
+  fill: none;
+  stroke: rgba(245, 158, 11, 0.55);
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-dasharray: 8 9;
+}
+
+.footprintDot {
+  stroke: white;
+  stroke-width: 3;
+}
+
+.footprintDotStrong {
+  fill: #7c3aed;
+}
+
+.footprintDotMedium {
+  fill: #8b5cf6;
+}
+
+.footprintDotLight {
+  fill: #c4b5fd;
+}
+
+.footprintSvgLabel,
+.footprintSvgMeta {
+  font-family: inherit;
+}
+
+.footprintSvgLabel {
+  fill: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.footprintSvgLabelStart {
+  text-anchor: end;
+}
+
+.footprintSvgMeta {
+  fill: var(--muted);
+  font-size: 11px;
+}
+
+.footprintTooltip {
+  position: absolute;
+  z-index: 10;
+  max-width: 280px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(17, 24, 39, 0.92);
+  color: white;
+  font-size: 12px;
+  line-height: 1.45;
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.24);
+  pointer-events: none;
+  white-space: normal;
+}
+
+.footprintTooltipTitle {
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.footprintTooltipMeta {
+  margin-top: 2px;
+  color: rgba(255, 255, 255, 0.82);
+  line-height: 1.35;
+}
+
+.footprintInsights {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.footprintInsight {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: #fbfaff;
+  border: 1px solid var(--border);
+}
+
+.footprintInsightLabel {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.footprintInsight strong {
+  font-size: 14px;
+  line-height: 1.45;
+}
+
 .sequenceRow {
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr) auto;
@@ -1425,10 +1764,32 @@ body {
   line-height: 1.45;
 }
 
+.notificationPreferenceWithSelect {
+  align-items: center;
+}
+
+.notificationPreferenceInlineDetail {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+}
+
 .notificationTestBtn {
   margin-left: auto;
   padding: 7px 12px;
   flex: 0 0 auto;
+}
+
+.notificationIntervalSelect {
+  min-width: 150px;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: white;
+  font: inherit;
+  color: var(--text);
 }
 
 .resetWarning {
@@ -1686,6 +2047,11 @@ body {
   .assistantBubble.user {
     max-width: 100%;
     width: 100%;
+  }
+
+  .footprintCharts,
+  .footprintInsights {
+    grid-template-columns: 1fr;
   }
 
   .historyStat {

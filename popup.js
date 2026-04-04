@@ -33,14 +33,14 @@ function fmtElapsed(ms) {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-function buildProgressSvg(valueLabel, goalLabel, ratio) {
+function buildProgressSvg(valueLabel, goalLabel, ratio, hasGoal = true) {
   const size = 148;
   const cx = size / 2;
   const cy = size / 2;
   const radius = 48;
   const circumference = 2 * Math.PI * radius;
   const dashOffset = circumference * (1 - Math.max(0, Math.min(1, ratio)));
-  const isOverGoal = ratio > 1;
+  const isOverGoal = hasGoal && ratio > 1;
   const accent = isOverGoal ? "#dc2626" : "#7d34d8";
   const track = isOverGoal ? "rgba(220, 38, 38, 0.12)" : "rgba(125, 52, 216, 0.12)";
 
@@ -107,6 +107,12 @@ async function submitIntent(minutes) {
   window.close();
 }
 
+async function stopSession() {
+  await chrome.runtime.sendMessage({ type: "stopCurrentSession" });
+  hideChooser();
+  await refresh();
+}
+
 async function refresh() {
   await loadInactivityThreshold();
   const { activeSession } = await chrome.storage.local.get(["activeSession"]);
@@ -127,7 +133,8 @@ async function refresh() {
   progressChart.innerHTML = buildProgressSvg(
     fmtElapsed(elapsedMs),
     goalMinutes ? `${goalMinutes}m` : "free",
-    ratio
+    ratio,
+    goalMinutes != null
   );
 
   if (activeSession.intendedMinutes != null && chooserMode !== "manual") {
@@ -141,6 +148,10 @@ document.getElementById("openDashboard").addEventListener("click", () => {
 
 document.getElementById("newSession").addEventListener("click", () => {
   showChooser("manual");
+});
+
+document.getElementById("stopSession").addEventListener("click", async () => {
+  await stopSession();
 });
 
 document.querySelectorAll(".intentOption").forEach((button) => {

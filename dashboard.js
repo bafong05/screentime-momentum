@@ -1,5 +1,7 @@
 const DEFAULT_INACTIVITY_THRESHOLD_MINUTES = 10;
 const LEGITIMATE_TAB_DWELL_MS = 3000;
+const DEFAULT_NO_GOAL_HOURLY_INTERVAL_HOURS = 1;
+const NO_GOAL_INTERVAL_OPTIONS_HOURS = [0.25, 0.5, 1, 2];
 let inactivityThresholdMs = DEFAULT_INACTIVITY_THRESHOLD_MINUTES * 60 * 1000;
 const DISTRIBUTION_COLORS = [
   "#7d34d8",
@@ -17,19 +19,28 @@ const expandedHistorySessions = new Set();
 const expandedSequenceLabels = new Set();
 let historySearchQuery = "";
 let historySearchScope = "all";
+let footprintSelectedDomain = "";
 const { startManualSession } = window.ScreenTimeSessionHelpers;
 let dashboardState = {
   activeSession: null,
   sessions: [],
   analyticsSessions: [],
   visits: [],
-  inactivityThresholdMinutes: DEFAULT_INACTIVITY_THRESHOLD_MINUTES
+  inactivityThresholdMinutes: DEFAULT_INACTIVITY_THRESHOLD_MINUTES,
+  noGoalHourlyIntervalHours: DEFAULT_NO_GOAL_HOURLY_INTERVAL_HOURS
 };
 
 function normalizeInactivityThresholdMinutes(value) {
   const minutes = Number(value);
   if (!Number.isFinite(minutes)) return DEFAULT_INACTIVITY_THRESHOLD_MINUTES;
   return Math.min(120, Math.max(1, Math.round(minutes)));
+}
+
+function normalizeNoGoalHourlyIntervalHours(value) {
+  const hours = Number(value);
+  if (!Number.isFinite(hours)) return DEFAULT_NO_GOAL_HOURLY_INTERVAL_HOURS;
+  if (NO_GOAL_INTERVAL_OPTIONS_HOURS.includes(hours)) return hours;
+  return DEFAULT_NO_GOAL_HOURLY_INTERVAL_HOURS;
 }
 
 function normalizeSessionName(value) {
@@ -172,7 +183,16 @@ function isValidDomain(domain) {
 function isDisplayDomain(domain) {
   if (!isValidDomain(domain)) return false;
   const normalized = domain.trim().toLowerCase();
-  return !["extensions", "newtab", "new-tab-page"].includes(normalized);
+  if (["extensions", "newtab", "new-tab-page"].includes(normalized)) return false;
+  return !(
+    normalized.startsWith("data:") ||
+    normalized.startsWith("data://") ||
+    normalized.startsWith("blob:") ||
+    normalized.startsWith("blob://") ||
+    normalized.startsWith("javascript:") ||
+    normalized.startsWith("about:") ||
+    normalized.startsWith("devtools:")
+  );
 }
 
 function hrefForVisit(visitOrUrl, fallbackLabel = "") {
@@ -180,7 +200,11 @@ function hrefForVisit(visitOrUrl, fallbackLabel = "") {
 
   if (rawUrl) {
     try {
-      return new URL(rawUrl).toString();
+      const parsed = new URL(rawUrl);
+      if (["data:", "blob:", "javascript:", "about:", "devtools:"].includes(parsed.protocol)) {
+        return "#";
+      }
+      return parsed.toString();
     } catch {}
   }
 
@@ -240,6 +264,33 @@ function displayLabelForVisit(visit) {
       const firstSegment = parsed.pathname.split("/").filter(Boolean)[0];
       if (firstSegment && firstSegment.length <= 28) {
         return `${fallbackDomain}/${firstSegment}`;
+      }
+    }
+  } catch {}
+
+  return fallbackDomain;
+}
+
+function footprintLabelForVisit(visit) {
+  const fallbackDomain = visit?.domain || "unknown";
+  const query = extractGoogleSearchQuery(visit?.url);
+  if (query) return `Google search: "${query}"`;
+
+  try {
+    const parsed = new URL(visit?.url);
+    const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
+
+    if (host.startsWith("google.")) {
+      if (parsed.pathname === "/" || parsed.pathname === "") {
+        return "Google homepage";
+      }
+
+      if (parsed.pathname === "/search") {
+        const tabMode = parsed.searchParams.get("tbm");
+        if (tabMode === "isch") return "Google Images";
+        if (tabMode === "nws") return "Google News";
+        if (tabMode === "vid") return "Google Videos";
+        return "Google search";
       }
     }
   } catch {}
@@ -334,13 +385,14 @@ function buildLiveSessions(sessions, activeSession, visits) {
       ...(session.metrics.timePerDomain || {})
     };
     timePerDomain[lastVisit.domain] = (timePerDomain[lastVisit.domain] || 0) + liveTailMs;
+    const liveDurationMs = Math.max(0, effectiveEndTime - Number(session.metrics.start || effectiveEndTime));
 
     return {
       ...session,
       metrics: {
         ...session.metrics,
-        end: lastVisit.time + liveTailMs,
-        durationMs: (session.metrics.durationMs || 0) + liveTailMs,
+        end: effectiveEndTime,
+        durationMs: liveDurationMs,
         timePerDomain
       }
     };
@@ -350,33 +402,25 @@ function buildLiveSessions(sessions, activeSession, visits) {
 function computeHourlyMinutes(sessions) {
   const todayStart = startOfDay();
   const hourly = new Array(24).fill(0);
+  const todayEnd = todayStart + 24 * 60 * 60 * 1000;
 
   for (const session of sessions) {
-    const visits = session.visits || [];
-    const sessionEnd = session?.metrics?.end || 0;
-    for (let i = 0; i < visits.length; i += 1) {
-      const current = visits[i];
-      const next = visits[i + 1];
-      const start = current?.time;
-      const end = next
-        ? Math.min(next.time, start + inactivityThresholdMs)
-        : Math.max(start, sessionEnd);
+    const sessionStart = Number(session?.metrics?.start) || 0;
+    const sessionEnd = Number(session?.metrics?.end) || 0;
+    if (!sessionStart || sessionEnd <= sessionStart) continue;
 
-      if (!start || end <= start) continue;
+    let cursor = Math.max(sessionStart, todayStart);
+    const limit = Math.min(sessionEnd, todayEnd);
 
-      let cursor = Math.max(start, todayStart);
-      const limit = Math.min(end, todayStart + 24 * 60 * 60 * 1000);
-
-      while (cursor < limit) {
-        const hourIndex = new Date(cursor).getHours();
-        const hourEnd = Math.min(startOfDay(cursor) + (hourIndex + 1) * 60 * 60 * 1000, limit);
-        hourly[hourIndex] += (hourEnd - cursor) / 60000;
-        cursor = hourEnd;
-      }
+    while (cursor < limit) {
+      const hourIndex = new Date(cursor).getHours();
+      const hourEnd = Math.min(startOfDay(cursor) + (hourIndex + 1) * 60 * 60 * 1000, limit);
+      hourly[hourIndex] += (hourEnd - cursor) / 60000;
+      cursor = hourEnd;
     }
   }
 
-  return hourly.map((value) => Math.round(value));
+  return hourly;
 }
 
 function computeWeekBars(sessions) {
@@ -471,21 +515,7 @@ function computeTopSiteSequences(sessions, limit = 3, sequenceLength = 3) {
   };
 
   (sessions || []).forEach((session) => {
-    const sessionVisits = Array.isArray(session?.visits) ? session.visits : [];
-    const legitimateDomains = [];
-
-    sessionVisits.forEach((visit, index) => {
-      if (!isDisplayDomain(visit?.domain)) return;
-
-      const nextVisit = sessionVisits[index + 1];
-      const rawEnd = nextVisit?.time ?? session?.metrics?.end ?? visit.time;
-      const dwellMs = Math.max(0, Math.min(rawEnd - visit.time, inactivityThresholdMs));
-      const isLegitimate = Boolean(visit?.hadInteraction) || dwellMs >= LEGITIMATE_TAB_DWELL_MS;
-
-      if (!isLegitimate) return;
-      if (legitimateDomains[legitimateDomains.length - 1] === visit.domain) return;
-      legitimateDomains.push(visit.domain);
-    });
+    const legitimateDomains = getLegitimateSessionDomains(session);
 
     if (legitimateDomains.length < sequenceLength) return;
 
@@ -524,6 +554,279 @@ function computeTopSiteSequences(sessions, limit = 3, sequenceLength = 3) {
       a.label.localeCompare(b.label)
     ))
     .slice(0, limit);
+}
+
+function getLegitimateSessionDomains(session) {
+  const sessionVisits = Array.isArray(session?.visits) ? session.visits : [];
+  const legitimateDomains = [];
+
+  sessionVisits.forEach((visit, index) => {
+    if (!isDisplayDomain(visit?.domain)) return;
+
+    const nextVisit = sessionVisits[index + 1];
+    const rawEnd = nextVisit?.time ?? session?.metrics?.end ?? visit.time;
+    const dwellMs = Math.max(0, Math.min(rawEnd - visit.time, inactivityThresholdMs));
+    const isLegitimate = Boolean(visit?.hadInteraction) || dwellMs >= LEGITIMATE_TAB_DWELL_MS;
+
+    if (!isLegitimate) return;
+    if (legitimateDomains[legitimateDomains.length - 1] === visit.domain) return;
+    legitimateDomains.push(visit.domain);
+  });
+
+  return legitimateDomains;
+}
+
+function getLegitimateSessionNodes(session) {
+  const sessionVisits = Array.isArray(session?.visits) ? session.visits : [];
+  const nodes = [];
+
+  sessionVisits.forEach((visit, index) => {
+    if (!isDisplayDomain(visit?.domain)) return;
+
+    const nextVisit = sessionVisits[index + 1];
+    const rawEnd = nextVisit?.time ?? session?.metrics?.end ?? visit.time;
+    const dwellMs = Math.max(0, Math.min(rawEnd - visit.time, inactivityThresholdMs));
+    const isLegitimate = Boolean(visit?.hadInteraction) || dwellMs >= LEGITIMATE_TAB_DWELL_MS;
+    const label = footprintLabelForVisit(visit);
+
+    if (!isLegitimate || !label) return;
+    if (nodes[nodes.length - 1] === label) return;
+    nodes.push(label);
+  });
+
+  return nodes;
+}
+
+function computeFootprintOptions(sessions) {
+  const counts = new Map();
+
+  (sessions || []).forEach((session) => {
+    getLegitimateSessionNodes(session).forEach((node) => {
+      counts.set(node, (counts.get(node) || 0) + 1);
+    });
+  });
+
+  return Array.from(counts.entries())
+    .map(([domain, count]) => ({ domain, count }))
+    .sort((a, b) => b.count - a.count || a.domain.localeCompare(b.domain));
+}
+
+function computeFootprintFlows(sessions, anchorDomain, limit = 5) {
+  const incoming = new Map();
+  const outgoing = new Map();
+
+  (sessions || []).forEach((session) => {
+    const nodes = getLegitimateSessionNodes(session);
+    nodes.forEach((node, index) => {
+      if (node !== anchorDomain) return;
+      const prev = nodes[index - 1];
+      const next = nodes[index + 1];
+
+      if (prev && prev !== anchorDomain) incoming.set(prev, (incoming.get(prev) || 0) + 1);
+      if (next && next !== anchorDomain) outgoing.set(next, (outgoing.get(next) || 0) + 1);
+    });
+  });
+
+  const rowsFor = (counts) => Array.from(counts.entries())
+    .map(([domain, count]) => ({ domain, count }))
+    .sort((a, b) => b.count - a.count || a.domain.localeCompare(b.domain))
+    .slice(0, limit);
+
+  const incomingRows = rowsFor(incoming);
+  const outgoingRows = rowsFor(outgoing);
+
+  return {
+    incomingRows,
+    outgoingRows,
+    strongestIncoming: incomingRows[0] || null,
+    strongestOutgoing: outgoingRows[0] || null
+  };
+}
+
+function renderFootprintBranchChart(items, anchorDomain, direction) {
+  if (!items.length) {
+    return `<div class="muted">Not enough path data yet for this direction.</div>`;
+  }
+
+  const width = 460;
+  const height = 320;
+  const isIncoming = direction.includes("incoming");
+  const anchorX = isIncoming ? 404 : 74;
+  const anchorY = isIncoming ? 56 : 266;
+  const points = isIncoming
+    ? [
+        { x: 354, y: 266 },
+        { x: 280, y: 214 },
+        { x: 232, y: 162 },
+        { x: 184, y: 110 },
+        { x: 142, y: 70 }
+      ]
+    : [
+        { x: 124, y: 56 },
+        { x: 198, y: 108 },
+        { x: 246, y: 160 },
+        { x: 294, y: 212 },
+        { x: 336, y: 252 }
+      ];
+  const maxCount = Math.max(...items.map((item) => item.count), 1);
+
+  const branches = items.map((item, index) => {
+    const point = points[Math.min(index, points.length - 1)];
+    const ratio = item.count / maxCount;
+    const pathClass = ratio > 0.74 ? "footprintLinkStrong" : ratio > 0.44 ? "footprintLinkMedium" : "footprintLinkLight";
+    const dotClass = ratio > 0.74 ? "footprintDotStrong" : ratio > 0.44 ? "footprintDotMedium" : "footprintDotLight";
+    const dotRadius = 5 + ratio * 4;
+    const labelX = isIncoming ? Math.max(18, point.x - 18) : point.x + 18;
+    const labelY = point.y + 2;
+    const metaX = labelX;
+    const metaY = point.y + 22;
+    const control1 = isIncoming
+      ? { x: Math.round(anchorX + (point.x - anchorX) * 0.4), y: anchorY + 10 }
+      : { x: Math.round(anchorX + (point.x - anchorX) * 0.48), y: anchorY - 10 };
+    const control2 = isIncoming
+      ? { x: control1.x - 22, y: point.y - 18 }
+      : { x: control1.x + 22, y: point.y + 18 };
+    const midpoint = cubicBezierPoint(
+      { x: anchorX, y: anchorY },
+      control1,
+      control2,
+      { x: point.x, y: point.y },
+      0.5
+    );
+    const midX = Math.round(midpoint.x);
+    const midY = Math.round(midpoint.y);
+    const pathD = `M ${anchorX} ${anchorY} C ${control1.x} ${control1.y}, ${control2.x} ${control2.y}, ${point.x} ${point.y}`;
+    const tooltipSite = escapeHtml(item.domain);
+    const tooltipCount = `${item.count} ${item.count === 1 ? "path" : "paths"}`;
+
+    return `
+      <path class="footprintLink ${pathClass} footprintHoverTarget" data-footprint-site="${tooltipSite}" data-footprint-count="${tooltipCount}" d="${pathD}"></path>
+      <circle class="footprintDot ${dotClass} footprintHoverTarget" data-footprint-site="${tooltipSite}" data-footprint-count="${tooltipCount}" cx="${midX}" cy="${midY}" r="${Math.round(dotRadius * 0.72)}"></circle>
+      <circle class="footprintDot ${dotClass} footprintHoverTarget" data-footprint-site="${tooltipSite}" data-footprint-count="${tooltipCount}" cx="${point.x}" cy="${point.y}" r="${Math.round(dotRadius)}"></circle>
+      <text class="footprintSvgLabel${isIncoming ? " footprintSvgLabelStart" : ""} footprintHoverTarget" data-footprint-site="${tooltipSite}" data-footprint-count="${tooltipCount}" x="${labelX}" y="${labelY}">${escapeHtml(item.domain)}</text>
+      <text class="footprintSvgMeta${isIncoming ? " footprintSvgLabelStart" : ""} footprintHoverTarget" data-footprint-site="${tooltipSite}" data-footprint-count="${tooltipCount}" x="${metaX}" y="${metaY}">${item.count} ${item.count === 1 ? "path" : "paths"}</text>
+    `;
+  }).join("");
+
+  return `
+    <div class="footprintAnchorBadge ${isIncoming ? "footprintAnchorBadgeIncoming" : "footprintAnchorBadgeOutgoing"}">
+      <span class="footprintAnchorBadgeTitle">${escapeHtml(anchorDomain)}</span>
+      <span class="footprintAnchorBadgeMeta">anchor site</span>
+    </div>
+    <svg class="footprintSvg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(direction)} for ${escapeHtml(anchorDomain)}">
+      ${
+        isIncoming
+          ? `<path class="footprintAxis" d="M52 34 L${width - 54} 34"></path>
+             <path class="footprintAxis" d="M${width - 54} 34 L${width - 54} ${height - 20}"></path>`
+          : `<path class="footprintAxis" d="M52 ${anchorY + 18} L${width - 22} ${anchorY + 18}"></path>
+             <path class="footprintAxis" d="M52 ${anchorY + 18} L52 30"></path>`
+      }
+      ${branches}
+    </svg>
+  `;
+}
+
+function attachFootprintTooltips(container) {
+  const tooltip = container.querySelector(".footprintTooltip");
+  if (!tooltip) return;
+
+  const showTooltip = (event) => {
+    const site = event.currentTarget.dataset.footprintSite || "";
+    const count = event.currentTarget.dataset.footprintCount || "";
+    if (!site && !count) return;
+    tooltip.innerHTML = `
+      <div class="footprintTooltipTitle">${site}</div>
+      <div class="footprintTooltipMeta">${count}</div>
+    `;
+    tooltip.hidden = false;
+    moveTooltip(event);
+  };
+
+  const moveTooltip = (event) => {
+    if (tooltip.hidden) return;
+    const bounds = container.getBoundingClientRect();
+    const x = event.clientX - bounds.left + 12;
+    const y = event.clientY - bounds.top + 12;
+    tooltip.style.left = `${x}px`;
+    tooltip.style.top = `${y}px`;
+  };
+
+  const hideTooltip = () => {
+    tooltip.hidden = true;
+  };
+
+  container.querySelectorAll(".footprintHoverTarget").forEach((node) => {
+    node.addEventListener("mouseenter", showTooltip);
+    node.addEventListener("mousemove", moveTooltip);
+    node.addEventListener("mouseleave", hideTooltip);
+  });
+}
+
+function renderFootprintExplorer(sessions) {
+  const container = document.getElementById("footprintExplorer");
+  const input = document.getElementById("footprintSiteInput");
+  const datalist = document.getElementById("footprintSiteOptions");
+  if (!container || !input || !datalist) return;
+
+  const options = computeFootprintOptions(sessions);
+
+  if (!options.length) {
+    input.value = "";
+    input.disabled = true;
+    datalist.innerHTML = "";
+    container.innerHTML = `<div class="muted">Browse across a few sessions to unlock the digital footprint explorer.</div>`;
+    return;
+  }
+
+  const optionDomains = new Set(options.map((option) => option.domain));
+  if (!optionDomains.has(footprintSelectedDomain)) {
+    footprintSelectedDomain = options[0].domain;
+  }
+
+  input.disabled = false;
+  input.value = footprintSelectedDomain;
+  datalist.innerHTML = options
+    .map((option) => `<option value="${escapeHtml(option.domain)}"></option>`)
+    .join("");
+
+  const { incomingRows, outgoingRows, strongestIncoming, strongestOutgoing } =
+    computeFootprintFlows(sessions, footprintSelectedDomain);
+
+  container.innerHTML = `
+    <div class="footprintCharts">
+      <div class="footprintChart">
+        <div class="footprintChartHeader">
+          <div class="footprintChartTitle">After ${escapeHtml(footprintSelectedDomain)}</div>
+          <div class="footprintChartHint">The most common next stops after this site appears in a session path.</div>
+        </div>
+        <div class="footprintMapMockup">
+          ${renderFootprintBranchChart(outgoingRows, footprintSelectedDomain, "outgoing paths")}
+        </div>
+      </div>
+      <div class="footprintChart">
+        <div class="footprintChartHeader">
+          <div class="footprintChartTitle">Leading to ${escapeHtml(footprintSelectedDomain)}</div>
+          <div class="footprintChartHint">The strongest incoming paths that tend to end at this site.</div>
+        </div>
+        <div class="footprintMapMockup">
+          ${renderFootprintBranchChart(incomingRows, footprintSelectedDomain, "incoming paths")}
+        </div>
+      </div>
+    </div>
+    <div class="footprintInsights">
+      <div class="footprintInsight">
+        <span class="footprintInsightLabel">Most common next stop</span>
+        <strong>${strongestOutgoing ? escapeHtml(strongestOutgoing.domain) : "No strong next stop yet"}</strong>
+      </div>
+      <div class="footprintInsight">
+        <span class="footprintInsightLabel">Strongest incoming source</span>
+        <strong>${strongestIncoming ? escapeHtml(strongestIncoming.domain) : "No strong source yet"}</strong>
+      </div>
+    </div>
+    <div class="footprintTooltip" hidden></div>
+  `;
+
+  attachFootprintTooltips(container);
 }
 
 function computeExtendedSessionSites(sessions, limit = 3) {
@@ -864,6 +1167,14 @@ function ringSlicePath(cx, cy, innerRadius, outerRadius, startAngle, endAngle) {
   ].join(" ");
 }
 
+function cubicBezierPoint(start, control1, control2, end, t) {
+  const mt = 1 - t;
+  return {
+    x: mt ** 3 * start.x + 3 * mt ** 2 * t * control1.x + 3 * mt * t ** 2 * control2.x + t ** 3 * end.x,
+    y: mt ** 3 * start.y + 3 * mt ** 2 * t * control1.y + 3 * mt * t ** 2 * control2.y + t ** 3 * end.y
+  };
+}
+
 function renderDistributionChart(timePerDomain) {
   const container = document.getElementById("distributionChart");
   const rows = Object.entries(timePerDomain)
@@ -984,7 +1295,8 @@ function renderCurrentSession(activeSession, visits = []) {
   progressContainer.innerHTML = buildProgressSvg(
     fmtElapsed(elapsedMs),
     goalMinutes ? `${goalMinutes}m` : "free",
-    ratio
+    ratio,
+    goalMinutes != null
   );
   sitesList.innerHTML = siteChips;
   sessionSites.textContent = `${validDomains.length} ${validDomains.length === 1 ? "site" : "sites"}`;
@@ -1038,14 +1350,14 @@ function renderCurrentSessionData(activeSession, visits) {
   `;
 }
 
-function buildProgressSvg(valueLabel, goalLabel, ratio) {
+function buildProgressSvg(valueLabel, goalLabel, ratio, hasGoal = true) {
   const size = 160;
   const cx = size / 2;
   const cy = size / 2;
   const radius = 54;
   const circumference = 2 * Math.PI * radius;
   const dashOffset = circumference * (1 - Math.max(0, Math.min(1, ratio)));
-  const isOverGoal = ratio > 1;
+  const isOverGoal = hasGoal && ratio > 1;
   const accent = isOverGoal ? "#dc2626" : "#7d34d8";
   const track = isOverGoal ? "rgba(220, 38, 38, 0.12)" : "rgba(125, 52, 216, 0.12)";
 
@@ -1845,13 +2157,21 @@ function renderSettings(minutes, statusText = "") {
   const endingSoon = document.getElementById("notifyEndingSoon");
   const overrun = document.getElementById("notifyOverrun");
   const missingGoal = document.getElementById("notifyMissingGoal");
+  const noGoalHourly = document.getElementById("notifyNoGoalHourly");
   const sessionEnded = document.getElementById("notifySessionEnded");
+  const noGoalHourlyInterval = document.getElementById("noGoalHourlyInterval");
   if (input) input.value = String(normalized);
   if (status) status.textContent = statusText || `Current timeout: ${normalized} minutes.`;
   if (endingSoon) endingSoon.checked = dashboardState.notificationPreferences?.endingSoon !== false;
   if (overrun) overrun.checked = dashboardState.notificationPreferences?.overrun !== false;
   if (missingGoal) missingGoal.checked = dashboardState.notificationPreferences?.missingGoal !== false;
+  if (noGoalHourly) noGoalHourly.checked = dashboardState.notificationPreferences?.noGoalHourly !== false;
   if (sessionEnded) sessionEnded.checked = dashboardState.notificationPreferences?.sessionEnded !== false;
+  if (noGoalHourlyInterval) {
+    noGoalHourlyInterval.value = String(
+      normalizeNoGoalHourlyIntervalHours(dashboardState.noGoalHourlyIntervalHours)
+    );
+  }
 }
 
 function setStatusText(id, text) {
@@ -1980,10 +2300,12 @@ function renderDashboard(data) {
     analyticsSessions: data.analyticsSessions || [],
     visits: data.visits || [],
     inactivityThresholdMinutes: thresholdMinutes,
+    noGoalHourlyIntervalHours: normalizeNoGoalHourlyIntervalHours(data.noGoalHourlyIntervalHours),
     notificationPreferences: data.notificationPreferences || {
       endingSoon: true,
       overrun: true,
       missingGoal: true,
+      noGoalHourly: true,
       sessionEnded: true
     }
   };
@@ -2011,6 +2333,7 @@ function renderDashboard(data) {
   renderSequenceInsights(analyticsSessions);
   renderExtendedSessionInsights(analyticsSessions);
   renderTimeOfDayInsights(analyticsSessions);
+  renderFootprintExplorer(analyticsSessions.length ? analyticsSessions : liveSessions);
   renderSettings(thresholdMinutes);
 }
 
@@ -2027,6 +2350,7 @@ async function refresh() {
     "analyticsVisits",
     "visits",
     "inactivityThresholdMinutes",
+    "noGoalHourlyIntervalHours",
     "notificationPreferences"
   ]);
 
@@ -2044,7 +2368,8 @@ async function refresh() {
         "sessions",
         "analyticsSessions",
         "visits",
-        "inactivityThresholdMinutes"
+        "inactivityThresholdMinutes",
+        "noGoalHourlyIntervalHours"
       ]);
       renderDashboard(rebuilt);
       return;
@@ -2052,6 +2377,18 @@ async function refresh() {
   }
 
   renderDashboard(data);
+}
+
+async function stopCurrentSessionFromUi() {
+  const response = await chrome.runtime.sendMessage({ type: "stopCurrentSession" });
+  if (response?.stopped) {
+    await refresh();
+    return;
+  }
+
+  if (response?.ok) {
+    await refresh();
+  }
 }
 
 function scheduleRefreshRetries() {
@@ -2124,6 +2461,10 @@ document.getElementById("newSessionBtn").addEventListener("click", async () => {
   await openIntentChooser("manual");
 });
 
+document.getElementById("stopSessionBtn").addEventListener("click", async () => {
+  await stopCurrentSessionFromUi();
+});
+
 document.getElementById("currentSessionName").addEventListener("click", async (event) => {
   event.stopPropagation();
   await promptRenameSession(event.currentTarget);
@@ -2153,6 +2494,25 @@ document.getElementById("historySearchScope").addEventListener("change", (event)
     dashboardState.activeSession,
     dashboardState.visits
   ));
+});
+
+function updateFootprintSelection(value) {
+  const sessions = dashboardState.analyticsSessions.length ? dashboardState.analyticsSessions : dashboardState.sessions;
+  const options = computeFootprintOptions(sessions);
+  const match = options.find((option) => option.domain.toLowerCase() === String(value || "").trim().toLowerCase());
+  if (!match) return;
+  footprintSelectedDomain = match.domain;
+  renderFootprintExplorer(sessions);
+}
+
+document.getElementById("footprintSiteInput").addEventListener("change", (event) => {
+  updateFootprintSelection(event.currentTarget.value);
+});
+
+document.getElementById("footprintSiteInput").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    updateFootprintSelection(event.currentTarget.value);
+  }
 });
 
 document.getElementById("closeIntentModalBtn").addEventListener("click", () => {
@@ -2201,18 +2561,26 @@ document.querySelectorAll(".thresholdPresetBtn").forEach((button) => {
   });
 });
 
-["notifyEndingSoon", "notifyOverrun", "notifyMissingGoal", "notifySessionEnded"].forEach((id) => {
+["notifyEndingSoon", "notifyOverrun", "notifyMissingGoal", "notifyNoGoalHourly", "notifySessionEnded"].forEach((id) => {
   document.getElementById(id).addEventListener("change", async () => {
     const nextPreferences = {
       endingSoon: document.getElementById("notifyEndingSoon").checked,
       overrun: document.getElementById("notifyOverrun").checked,
       missingGoal: document.getElementById("notifyMissingGoal").checked,
+      noGoalHourly: document.getElementById("notifyNoGoalHourly").checked,
       sessionEnded: document.getElementById("notifySessionEnded").checked
     };
     await chrome.storage.local.set({ notificationPreferences: nextPreferences });
     dashboardState.notificationPreferences = nextPreferences;
     setStatusText("notificationPreferencesStatus", "Notification preferences saved.");
   });
+});
+
+document.getElementById("noGoalHourlyInterval").addEventListener("change", async (event) => {
+  const hours = normalizeNoGoalHourlyIntervalHours(event.currentTarget.value);
+  await chrome.storage.local.set({ noGoalHourlyIntervalHours: hours });
+  dashboardState.noGoalHourlyIntervalHours = hours;
+  setStatusText("notificationPreferencesStatus", "Notification preferences saved.");
 });
 
 document.querySelectorAll(".notificationTestBtn").forEach((button) => {
@@ -2320,8 +2688,14 @@ chrome.storage.onChanged.addListener((changes, area) => {
     };
     renderSettings(dashboardState.inactivityThresholdMinutes, document.getElementById("thresholdStatus")?.textContent || "");
   }
+  if (changes.noGoalHourlyIntervalHours) {
+    dashboardState.noGoalHourlyIntervalHours = normalizeNoGoalHourlyIntervalHours(
+      changes.noGoalHourlyIntervalHours.newValue
+    );
+    renderSettings(dashboardState.inactivityThresholdMinutes, document.getElementById("thresholdStatus")?.textContent || "");
+  }
 
-  if (changes.sessions || changes.analyticsSessions || changes.activeSession || changes.visits || changes.inactivityThresholdMinutes || changes.notificationPreferences) {
+  if (changes.sessions || changes.analyticsSessions || changes.activeSession || changes.visits || changes.inactivityThresholdMinutes || changes.notificationPreferences || changes.noGoalHourlyIntervalHours) {
     renderDashboard(dashboardState);
   }
 });

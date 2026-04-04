@@ -38,6 +38,16 @@ h1 {
   gap: 8px;
 }
 
+.popupActions {
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.popupActions button {
+  flex: 0 0 auto;
+  min-width: 82px;
+}
+
 .intentControls {
   display: flex;
   gap: 6px;
