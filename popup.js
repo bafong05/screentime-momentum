@@ -2,7 +2,37 @@ let chooserMode = null;
 const launchMode = new URLSearchParams(window.location.search).get("intent");
 const DEFAULT_INACTIVITY_THRESHOLD_MINUTES = 10;
 let inactivityThresholdMs = DEFAULT_INACTIVITY_THRESHOLD_MINUTES * 60 * 1000;
-const { normalizeSessionName, saveIntentToActiveSession, startManualSession } = window.ScreenTimeSessionHelpers;
+const sessionHelpers = window.ScreenTimeSessionHelpers || null;
+const normalizeSessionName =
+  sessionHelpers?.normalizeSessionName ||
+  ((value) => String(value || "").trim().replace(/\s+/g, " ").slice(0, 80));
+const saveIntentToActiveSession = sessionHelpers?.saveIntentToActiveSession || null;
+const startManualSession = sessionHelpers?.startManualSession || null;
+
+function showPopupError(message) {
+  const heading = document.getElementById("popupHeading");
+  const progressChart = document.getElementById("popupProgressChart");
+  const chooser = document.getElementById("intentChooser");
+  const actionButtons = [
+    document.getElementById("openDashboard"),
+    document.getElementById("stopSession"),
+    document.getElementById("newSession"),
+    document.getElementById("otherIntentBtn"),
+    document.getElementById("applyOtherIntent")
+  ];
+
+  if (heading) heading.textContent = "Extension needs refresh";
+  if (progressChart) {
+    progressChart.innerHTML = `<div style="padding:16px;text-align:center;color:#6b7280;font-size:13px;">${message}</div>`;
+  }
+  if (chooser) chooser.hidden = true;
+  actionButtons.forEach((button) => {
+    if (button) button.disabled = true;
+  });
+  document.querySelectorAll(".intentOption").forEach((button) => {
+    button.disabled = true;
+  });
+}
 
 function currentSessionName() {
   return normalizeSessionName(document.getElementById("sessionNameInput")?.value || "");
@@ -97,8 +127,10 @@ async function submitIntent(minutes) {
   const sessionName = currentSessionName();
 
   if (chooserMode === "manual") {
+    if (!startManualSession) throw new Error("Session helpers are unavailable.");
     await startManualSession(minutes, sessionName);
   } else {
+    if (!saveIntentToActiveSession) throw new Error("Session helpers are unavailable.");
     await saveIntentToActiveSession(minutes, sessionName);
   }
 
@@ -142,47 +174,65 @@ async function refresh() {
   }
 }
 
-document.getElementById("openDashboard").addEventListener("click", () => {
-  chrome.tabs.create({ url: chrome.runtime.getURL("dashboard.html") });
-});
-
-document.getElementById("newSession").addEventListener("click", () => {
-  showChooser("manual");
-});
-
-document.getElementById("stopSession").addEventListener("click", async () => {
-  await stopSession();
-});
-
-document.querySelectorAll(".intentOption").forEach((button) => {
-  button.addEventListener("click", () => {
-    submitIntent(button.dataset.noGoal ? null : Number(button.dataset.minutes));
+function bindPopupEvents() {
+  document.getElementById("openDashboard").addEventListener("click", () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL("dashboard.html") });
   });
-});
 
-document.getElementById("otherIntentBtn").addEventListener("click", () => {
-  document.getElementById("otherIntentInputWrap").hidden = false;
-  document.getElementById("otherIntentInput").focus();
-});
+  document.getElementById("newSession").addEventListener("click", () => {
+    showChooser("manual");
+  });
 
-document.getElementById("applyOtherIntent").addEventListener("click", () => {
-  const value = Number(document.getElementById("otherIntentInput").value.trim());
-  submitIntent(value);
-});
+  document.getElementById("stopSession").addEventListener("click", async () => {
+    await stopSession();
+  });
 
-document.getElementById("otherIntentInput").addEventListener("keydown", (event) => {
-  if (event.key === "Enter") {
-    const value = Number(event.currentTarget.value.trim());
+  document.querySelectorAll(".intentOption").forEach((button) => {
+    button.addEventListener("click", () => {
+      submitIntent(button.dataset.noGoal ? null : Number(button.dataset.minutes));
+    });
+  });
+
+  document.getElementById("otherIntentBtn").addEventListener("click", () => {
+    document.getElementById("otherIntentInputWrap").hidden = false;
+    document.getElementById("otherIntentInput").focus();
+  });
+
+  document.getElementById("applyOtherIntent").addEventListener("click", () => {
+    const value = Number(document.getElementById("otherIntentInput").value.trim());
     submitIntent(value);
-  }
-});
+  });
 
-refresh();
-if (launchMode === "manual" || launchMode === "auto") {
-  showChooser(launchMode);
+  document.getElementById("otherIntentInput").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      const value = Number(event.currentTarget.value.trim());
+      submitIntent(value);
+    }
+  });
 }
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== "local") return;
-  if (changes.activeSession || changes.inactivityThresholdMinutes) refresh();
+
+async function initPopup() {
+  if (!sessionHelpers) {
+    showPopupError("Reload the extension in chrome://extensions and reopen the popup.");
+    return;
+  }
+
+  bindPopupEvents();
+  await refresh();
+
+  if (launchMode === "manual" || launchMode === "auto") {
+    showChooser(launchMode);
+  }
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local") return;
+    if (changes.activeSession || changes.inactivityThresholdMinutes) refresh();
+  });
+
+  setInterval(refresh, 1000);
+}
+
+initPopup().catch((error) => {
+  console.error("Popup failed to initialize", error);
+  showPopupError("Something went wrong while loading the popup. Try refreshing the extension.");
 });
-setInterval(refresh, 1000);

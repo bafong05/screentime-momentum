@@ -9,9 +9,9 @@
   <body class="intentPage">
     <main class="intentShell">
       <section class="intentCard">
-        <div class="intentEyebrow" id="intentEyebrow">New session</div>
-        <h1 id="intentTitle">Choose intended duration</h1>
-        <p class="intentHint" id="intentHint">Select a goal to continue.</p>
+        <div class="intentEyebrow" id="intentEyebrow">New Session</div>
+        <h1 id="intentTitle">Choose intended duration for new session</h1>
+        <p class="intentHint" id="intentHint">A new session started after inactivity. Select a goal to continue.</p>
 
         <div class="intentOptions">
           <button class="intentOption" type="button" data-minutes="5">Real quick &lt;5 min</button>
@@ -23,14 +23,13 @@
         </div>
 
         <div class="intentOther">
-          <label class="intentOtherLabel" for="sessionNameInput">Session name</label>
           <div class="intentOtherRow">
-            <input id="sessionNameInput" type="text" maxlength="80" placeholder="What are you planning to do?" />
+            <input id="sessionNameInput" type="text" maxlength="80" placeholder="Session name (optional)" />
           </div>
         </div>
 
         <div class="intentOther">
-          <label class="intentOtherLabel" for="otherIntentInput">Other</label>
+          <div class="intentOtherTitle">Other</div>
           <div class="intentOtherRow">
             <input id="otherIntentInput" type="number" min="1" step="1" placeholder="Minutes" />
             <button id="applyOtherIntent" type="button">Set</button>

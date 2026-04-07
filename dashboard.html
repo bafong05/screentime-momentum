@@ -220,19 +220,7 @@
 
         <section class="tabPanel" data-tab-panel="sessions" hidden>
           <section class="todayLayout">
-            <article class="panelCard">
-              <div class="panelHeader">
-                <div>
-                  <div class="label">Today's sessions</div>
-                  <div class="panelHint" id="recentSessionsCount">0 sessions today</div>
-                </div>
-              </div>
-              <div id="sessionsList" class="sessionsList">
-                <div class="muted">Loading...</div>
-              </div>
-            </article>
-
-            <div class="todaySidebar">
+            <div class="todayTopCards">
               <article class="panelCard">
                 <div class="panelHeader">
                   <div>
@@ -259,7 +247,7 @@
                 <div id="activityChart" class="chartMount" aria-label="Today's activity chart"></div>
               </article>
 
-              <article class="panelCard chartCard">
+              <article class="panelCard chartCard distributionPanelCard">
                 <div class="panelHeader">
                   <div>
                     <div class="label">Time distribution</div>
@@ -269,6 +257,18 @@
                 <div id="distributionChart" class="distributionCard" aria-label="Time distribution chart"></div>
               </article>
             </div>
+
+            <article class="panelCard todaySessionsCard">
+              <div class="panelHeader">
+                <div>
+                  <div class="label">Today's sessions</div>
+                  <div class="panelHint" id="recentSessionsCount">0 sessions today</div>
+                </div>
+              </div>
+              <div id="sessionsList" class="sessionsList">
+                <div class="muted">Loading...</div>
+              </div>
+            </article>
           </section>
         </section>
 

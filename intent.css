@@ -14,20 +14,20 @@
   min-height: 100vh;
   display: grid;
   place-items: center;
-  padding: 20px 16px;
+  padding: 8px 10px;
 }
 
 .intentCard {
-  width: min(420px, 100%);
-  padding: 20px;
+  width: min(620px, 100%);
+  padding: 14px 16px 16px;
   border-radius: 24px;
   background: rgba(255, 255, 255, 0.96);
-  border: 1px solid rgba(125, 52, 216, 0.08);
-  box-shadow: 0 18px 52px rgba(86, 46, 146, 0.12);
+  border: 1px solid rgba(31, 41, 55, 0.12);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
 }
 
 .intentEyebrow {
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -37,89 +37,91 @@
 
 .intentCard h1 {
   margin: 0;
-  font-size: clamp(24px, 4vw, 32px);
-  line-height: 1.05;
+  font-size: clamp(18px, 2.4vw, 22px);
+  line-height: 1.1;
   letter-spacing: -0.03em;
 }
 
 .intentHint {
-  margin: 10px 0 18px;
-  font-size: 15px;
+  margin: 8px 0 10px;
+  font-size: 13px;
   color: #5f6373;
 }
 
 .intentOptions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  gap: 10px 12px;
+  margin-top: 8px;
 }
 
 .intentOption,
 #applyOtherIntent {
-  border: 1px solid rgba(125, 52, 216, 0.16);
-  border-radius: 18px;
+  border: 2px solid rgba(17, 24, 39, 0.12);
+  border-radius: 16px;
   background: #fff;
   color: #1b1f2f;
   cursor: pointer;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 800;
   letter-spacing: -0.02em;
-  min-height: 58px;
-  padding: 14px 16px;
+  min-height: 56px;
+  padding: 10px 16px;
 }
 
 .intentOption:hover,
 #applyOtherIntent:hover {
   border-color: rgba(125, 52, 216, 0.34);
-  box-shadow: 0 10px 30px rgba(125, 52, 216, 0.12);
+  box-shadow: 0 10px 24px rgba(125, 52, 216, 0.1);
 }
 
 .intentOther {
-  margin-top: 14px;
+  margin-top: 12px;
 }
 
-.intentOtherLabel {
-  display: block;
-  margin-bottom: 8px;
-  font-size: 12px;
-  font-weight: 700;
-  color: #5f6373;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+.intentOtherTitle {
+  display: grid;
+  place-items: center;
+  min-height: 56px;
+  margin-bottom: 10px;
+  border: 2px solid rgba(17, 24, 39, 0.12);
+  border-radius: 16px;
+  background: #fff;
+  color: #1b1f2f;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
 }
 
 .intentOtherRow {
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 12px;
+  gap: 10px;
 }
 
 #sessionNameInput,
 #otherIntentInput {
   width: 100%;
-  min-height: 52px;
+  min-height: 56px;
   padding: 0 16px;
-  border: 1px solid rgba(125, 52, 216, 0.16);
-  border-radius: 18px;
+  border: 2px solid rgba(17, 24, 39, 0.12);
+  border-radius: 16px;
   background: #fff;
-  font-size: 16px;
+  font-size: 15px;
 }
 
 #applyOtherIntent {
-  min-width: 92px;
+  min-width: 84px;
+}
+
+#sessionNameInput::placeholder,
+#otherIntentInput::placeholder {
+  color: #7b8191;
 }
 
 @media (max-width: 640px) {
   .intentCard {
-    padding: 22px;
-    border-radius: 22px;
-  }
-
-  .intentOptions {
-    grid-template-columns: 1fr;
-  }
-
-  .intentOtherRow {
-    grid-template-columns: 1fr;
+    padding: 14px;
+    border-radius: 20px;
   }
 }

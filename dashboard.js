@@ -20,7 +20,8 @@ const expandedSequenceLabels = new Set();
 let historySearchQuery = "";
 let historySearchScope = "all";
 let footprintSelectedDomain = "";
-const { startManualSession } = window.ScreenTimeSessionHelpers;
+const dashboardSessionHelpers = window.ScreenTimeSessionHelpers || null;
+const startManualSession = dashboardSessionHelpers?.startManualSession || null;
 let dashboardState = {
   activeSession: null,
   sessions: [],
@@ -29,6 +30,42 @@ let dashboardState = {
   inactivityThresholdMinutes: DEFAULT_INACTIVITY_THRESHOLD_MINUTES,
   noGoalHourlyIntervalHours: DEFAULT_NO_GOAL_HOURLY_INTERVAL_HOURS
 };
+
+function showDashboardError(message) {
+  const shell = document.querySelector(".appShell");
+  if (!shell) {
+    document.body.innerHTML = `
+      <div style="min-height:100vh;display:grid;place-items:center;padding:32px;background:#f6f4fb;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1f2937;">
+        <div style="max-width:520px;padding:24px 26px;border-radius:20px;background:#fff;border:1px solid rgba(31,41,55,.10);box-shadow:0 12px 32px rgba(15,23,42,.08);">
+          <div style="font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#7d34d8;margin-bottom:8px;">Extension needs refresh</div>
+          <div style="font-size:28px;font-weight:800;line-height:1.08;letter-spacing:-.03em;margin-bottom:10px;">Dashboard unavailable</div>
+          <div style="font-size:15px;line-height:1.5;color:#5f6373;">${escapeHtml(message)}</div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  shell.innerHTML = `
+    <div style="min-height:100vh;display:grid;place-items:center;padding:32px;width:100%;">
+      <div style="max-width:520px;padding:24px 26px;border-radius:20px;background:#fff;border:1px solid rgba(31,41,55,.10);box-shadow:0 12px 32px rgba(15,23,42,.08);">
+        <div style="font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#7d34d8;margin-bottom:8px;">Extension needs refresh</div>
+        <div style="font-size:28px;font-weight:800;line-height:1.08;letter-spacing:-.03em;margin-bottom:10px;">Dashboard unavailable</div>
+        <div style="font-size:15px;line-height:1.5;color:#5f6373;">${escapeHtml(message)}</div>
+      </div>
+    </div>
+  `;
+}
+
+window.addEventListener("error", (event) => {
+  console.error("Dashboard runtime error", event.error || event.message || event);
+  showDashboardError("Reload the extension in chrome://extensions and reopen the dashboard.");
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  console.error("Dashboard unhandled rejection", event.reason);
+  showDashboardError("Reload the extension in chrome://extensions and reopen the dashboard.");
+});
 
 function normalizeInactivityThresholdMinutes(value) {
   const minutes = Number(value);
@@ -1013,8 +1050,8 @@ function renderActivityChart(values) {
   const totalMinutes = values.reduce((sum, value) => sum + value, 0);
   document.getElementById("activityTotal").textContent = msToPretty(totalMinutes * 60000);
   const width = 640;
-  const height = 220;
-  const padding = { top: 18, right: 10, bottom: 36, left: 42 };
+  const height = 270;
+  const padding = { top: 18, right: 10, bottom: 38, left: 42 };
   const innerWidth = width - padding.left - padding.right;
   const innerHeight = height - padding.top - padding.bottom;
   const maxValue = Math.max(10, Math.ceil(Math.max(...values, 0) / 10) * 10);
@@ -1178,6 +1215,7 @@ function cubicBezierPoint(start, control1, control2, end, t) {
 function renderDistributionChart(timePerDomain) {
   const container = document.getElementById("distributionChart");
   const rows = Object.entries(timePerDomain)
+    .filter(([, ms]) => Number.isFinite(ms) && ms > 0)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 8);
 
@@ -1187,6 +1225,11 @@ function renderDistributionChart(timePerDomain) {
   }
 
   const total = rows.reduce((sum, [, ms]) => sum + ms, 0);
+  if (!Number.isFinite(total) || total <= 0) {
+    container.innerHTML = `<div class="muted">No site time yet today.</div>`;
+    return;
+  }
+
   const cx = 110;
   const cy = 110;
   const outer = 70;
@@ -2400,6 +2443,10 @@ function scheduleRefreshRetries() {
 }
 
 async function startNewSession(minutes, sessionName = "") {
+  if (!startManualSession) {
+    showDashboardError("Reload the extension in chrome://extensions and reopen the dashboard.");
+    return;
+  }
   await startManualSession(minutes, sessionName);
   await refresh();
 }

@@ -200,16 +200,26 @@ body {
 
 .todayLayout {
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(320px, 0.85fr);
   gap: 16px;
   margin-bottom: 16px;
   align-items: start;
 }
 
-.todaySidebar {
+.todayTopCards {
   display: grid;
   gap: 16px;
   align-content: start;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
+}
+
+.todaySessionsCard {
+  width: 100%;
+}
+
+.todayTopCards .panelCard {
+  height: 100%;
+  min-height: 306px;
 }
 
 .singlePanelGrid {
@@ -412,7 +422,7 @@ body {
   min-height: 240px;
 }
 
-.todaySidebar .chartCard {
+.todayTopCards .chartCard {
   min-height: 220px;
 }
 
@@ -518,8 +528,12 @@ body {
   position: relative;
 }
 
-.todaySidebar .chartMount {
-  min-height: 150px;
+.todayTopCards .chartMount {
+  min-height: 210px;
+}
+
+.distributionPanelCard .panelHeader {
+  margin-bottom: -10px;
 }
 
 .chartSvg {
@@ -591,22 +605,29 @@ body {
   position: relative;
 }
 
-.todaySidebar .distributionCard {
-  gap: 8px;
-  min-height: 120px;
+.todayTopCards .distributionCard {
+  gap: 2px;
+  min-height: 0;
+  align-content: start;
+  align-items: start;
+  justify-items: center;
+  margin-top: -10px;
 }
 
-.todaySidebar .distributionCard .chartSvg {
-  max-width: 180px;
+.todayTopCards .distributionCard .chartSvg {
+  max-width: 140px;
+  margin-top: -6px;
+  margin-bottom: -4px;
 }
 
-.todaySidebar .distributionCard .legendList {
-  gap: 6px 12px;
+.todayTopCards .distributionCard .legendList {
+  gap: 4px 10px;
+  margin-top: -6px;
 }
 
-.todaySidebar .distributionCard .legendLabel,
-.todaySidebar .distributionCard .legendValue {
-  font-size: 12px;
+.todayTopCards .distributionCard .legendLabel,
+.todayTopCards .distributionCard .legendValue {
+  font-size: 11px;
 }
 
 .legendList {
@@ -1943,7 +1964,7 @@ body {
   }
 
   .heroGrid,
-  .todayLayout {
+  .todayTopCards {
     grid-template-columns: 1fr;
   }
 }

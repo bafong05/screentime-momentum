@@ -46,6 +46,7 @@ let lastOverrunNotificationSessionId = null;
 let lastGoalReminderSessionId = null;
 let lastEndingSoonNotificationSessionId = null;
 let lastSessionEndedNotificationSessionId = null;
+let logVisitChain = Promise.resolve();
 const SESSION_MONITOR_ALARM = "session-monitor";
 const SESSION_OVERRUN_ALARM = "session-overrun-check";
 const SESSION_GOAL_REMINDER_ALARM = "session-goal-reminder";
@@ -481,6 +482,8 @@ async function stopCurrentSession() {
   await chrome.storage.local.set({
     activeSession: null,
     analyticsActiveSession: null,
+    pendingAutoResume: null,
+    awaitingResumeIntent: false,
     lastUserActivityAt: Date.now()
   });
 
@@ -498,17 +501,208 @@ async function promptForAutoSessionIntent(sessionId) {
   if (!sessionId || lastPromptedAutoSessionId === sessionId) return;
   if (!chromeAppFocused) return;
 
+  const {
+    activeSession,
+    analyticsActiveSession
+  } = await chrome.storage.local.get(["activeSession", "analyticsActiveSession"]);
+
+  if (activeSession?.id !== sessionId) return;
+  if (activeSession?.goalSelectionMade === true) return;
+  if (activeSession?.autoIntentPrompted === true) {
+    lastPromptedAutoSessionId = sessionId;
+    return;
+  }
+
+  const updates = {
+    activeSession: {
+      ...activeSession,
+      autoIntentPrompted: true
+    }
+  };
+
+  if (analyticsActiveSession?.id === sessionId) {
+    updates.analyticsActiveSession = {
+      ...analyticsActiveSession,
+      autoIntentPrompted: true
+    };
+  }
+
+  await chrome.storage.local.set(updates);
   lastPromptedAutoSessionId = sessionId;
 
   try {
+    const popupUrl = chrome.runtime.getURL("intent.html?mode=auto");
+    const existingTabs = await chrome.tabs.query({ url: popupUrl });
+    const existingTab = existingTabs?.[0];
+
+    if (existingTab?.windowId) {
+      await chrome.windows.update(existingTab.windowId, { focused: true });
+      return;
+    }
+
     await chrome.windows.create({
-      url: chrome.runtime.getURL("intent.html?mode=auto"),
+      url: popupUrl,
       type: "popup",
-      width: 360,
-      height: 520,
+      width: 640,
+      height: 560,
       focused: true
     });
   } catch {}
+}
+
+async function promptForPendingAutoIntent() {
+  if (!chromeAppFocused) return;
+
+  const popupUrl = chrome.runtime.getURL("intent.html?mode=auto");
+  const existingTabs = await chrome.tabs.query({ url: popupUrl });
+  const existingTab = existingTabs?.[0];
+  const { pendingAutoResume, awaitingResumeIntent } = await chrome.storage.local.get([
+    "pendingAutoResume",
+    "awaitingResumeIntent"
+  ]);
+
+  if (!awaitingResumeIntent) return;
+  if (!pendingAutoResume?.id) return;
+
+  if (pendingAutoResume.autoIntentPrompted === true) {
+    if (existingTab?.windowId) {
+      await chrome.windows.update(existingTab.windowId, { focused: true });
+    }
+    return;
+  }
+
+  await chrome.storage.local.set({
+    pendingAutoResume: {
+      ...pendingAutoResume,
+      autoIntentPrompted: true
+    }
+  });
+
+  try {
+    if (existingTab?.windowId) {
+      await chrome.windows.update(existingTab.windowId, { focused: true });
+      return;
+    }
+
+    await chrome.windows.create({
+      url: popupUrl,
+      type: "popup",
+      width: 640,
+      height: 560,
+      focused: true
+    });
+  } catch {}
+}
+
+async function stagePendingAutoResume(tab, source = "activity-resume", ts = Date.now()) {
+  const url = tab?.url || "";
+  if (!url || shouldIgnoreUrl(url) || shouldIgnoreExtensionPage(url)) return false;
+
+  const { pendingAutoResume } = await chrome.storage.local.get(["pendingAutoResume"]);
+  const nextPending = {
+    id: pendingAutoResume?.id || `${ts}`,
+    url,
+    tabId: tab?.id ?? null,
+    favIconUrl: tab?.favIconUrl || "",
+    source,
+    detectedAt: ts,
+    autoIntentPrompted: pendingAutoResume?.autoIntentPrompted || false
+  };
+
+  await chrome.storage.local.set({
+    pendingAutoResume: nextPending,
+    awaitingResumeIntent: true,
+    lastUserActivityAt: ts
+  });
+
+  await promptForPendingAutoIntent();
+  return true;
+}
+
+async function acceptPendingAutoResumeWithoutGoal() {
+  const {
+    pendingAutoResume,
+    awaitingResumeIntent,
+    activeSession,
+    analyticsActiveSession,
+    visits = [],
+    analyticsVisits = []
+  } = await chrome.storage.local.get([
+    "pendingAutoResume",
+    "awaitingResumeIntent",
+    "activeSession",
+    "analyticsActiveSession",
+    "visits",
+    "analyticsVisits"
+  ]);
+
+  if (activeSession?.id || !awaitingResumeIntent || !pendingAutoResume?.url) {
+    return { ok: true, started: false };
+  }
+
+  const now = Date.now();
+  const sessionId = `${now}`;
+  const domain = toDomain(pendingAutoResume.url);
+  const newSession = {
+    id: sessionId,
+    startTime: now,
+    lastEventTime: now,
+    uniqueDomains: domain && domain !== "unknown" ? [domain] : [],
+    visitCount: 1,
+    intendedMinutes: null,
+    sessionName: "",
+    goalSelectionMade: false,
+    autoIntentPrompted: false
+  };
+  const newVisit = {
+    url: pendingAutoResume.url,
+    domain,
+    time: now,
+    lastActiveTime: now,
+    source: pendingAutoResume.source || "activity-resume",
+    tabId: pendingAutoResume.tabId ?? null,
+    favIconUrl: pendingAutoResume.favIconUrl || "",
+    hadInteraction: true,
+    firstInteractionTime: now,
+    sessionId
+  };
+
+  await chrome.storage.local.set({
+    visits: [...visits, newVisit],
+    analyticsVisits: [...analyticsVisits, { ...newVisit }],
+    activeSession: newSession,
+    analyticsActiveSession: {
+      ...(analyticsActiveSession || newSession),
+      ...newSession
+    },
+    pendingAutoResume: null,
+    awaitingResumeIntent: false,
+    lastUserActivityAt: now
+  });
+
+  await rebuildSessions();
+  await rebuildAnalyticsSessions();
+  await maybeNotifyMissingGoal(newSession);
+  return { ok: true, started: true };
+}
+
+async function ensureAutoIntentPromptForActiveSession() {
+  if (!chromeAppFocused) return false;
+
+  const { activeSession, pendingAutoResume, awaitingResumeIntent } = await chrome.storage.local.get([
+    "activeSession",
+    "pendingAutoResume",
+    "awaitingResumeIntent"
+  ]);
+  if (!activeSession?.id && awaitingResumeIntent && pendingAutoResume?.id) {
+    await promptForPendingAutoIntent();
+    return true;
+  }
+  if (!activeSession?.id) return false;
+  if (activeSession.goalSelectionMade === true) return false;
+
+  await promptForAutoSessionIntent(activeSession.id);
+  return true;
 }
 
 async function heartbeatActiveSession(ts) {
@@ -545,109 +739,137 @@ async function resumeSessionFromForegroundActivity(tab, ts = Date.now()) {
   if (!url || shouldIgnoreUrl(url) || shouldIgnoreExtensionPage(url)) return false;
 
   const { activeSession } = await chrome.storage.local.get(["activeSession"]);
+  if (activeSession?.id && activeSession.goalSelectionMade !== true) {
+    await promptForAutoSessionIntent(activeSession.id);
+  }
   const shouldResume = !activeSession;
 
   if (!shouldResume) return false;
 
-  await logVisit(url, "activity-resume", tab.id ?? null, tab.favIconUrl || "");
+  await stagePendingAutoResume(tab, "activity-resume", ts);
   return true;
 }
 
 async function logVisit(url, source, tabId = null, favIconUrl = "") {
-  if (shouldIgnoreUrl(url)) return;
-  if (shouldIgnoreExtensionPage(url)) return;
+  return logVisitChain = logVisitChain.then(async () => {
+    if (shouldIgnoreUrl(url)) return;
+    if (shouldIgnoreExtensionPage(url)) return;
 
-  const now = Date.now();
-  const visit = {
-    url,
-    domain: toDomain(url),
-    time: now,
-    lastActiveTime: now,
-    source,
-    tabId,
-    favIconUrl,
-    hadInteraction: false
-  };
-
-  const data = await chrome.storage.local.get([
-    "visits",
-    "activeSession",
-    "analyticsVisits",
-    "analyticsActiveSession"
-  ]);
-  const visits = data.visits || [];
-  const analyticsVisits = data.analyticsVisits || [];
-  let active = data.activeSession || null;
-  let analyticsActive = data.analyticsActiveSession || null;
-  let startedAutoSession = false;
-
-  if (!active) {
-    active = {
-      id: `${now}`,
-      startTime: now,
-      lastEventTime: now,
-      uniqueDomains: [],
-      visitCount: 0,
-      goalSelectionMade: false
+    const now = Date.now();
+    const visit = {
+      url,
+      domain: toDomain(url),
+      time: now,
+      lastActiveTime: now,
+      source,
+      tabId,
+      favIconUrl,
+      hadInteraction: false
     };
-    startedAutoSession = true;
-  }
 
-  if (!analyticsActive) {
-    analyticsActive = {
-      id: active?.id || `${now}`,
-      startTime: now,
-      lastEventTime: now,
-      uniqueDomains: [],
-      visitCount: 0,
-      goalSelectionMade: active?.goalSelectionMade ?? false
+    const data = await chrome.storage.local.get([
+      "visits",
+      "activeSession",
+      "pendingAutoResume",
+      "awaitingResumeIntent",
+      "analyticsVisits",
+      "analyticsActiveSession"
+    ]);
+    const visits = data.visits || [];
+    const analyticsVisits = data.analyticsVisits || [];
+    let active = data.activeSession || null;
+    const pendingAutoResume = data.pendingAutoResume || null;
+    const awaitingResumeIntent = Boolean(data.awaitingResumeIntent);
+    let analyticsActive = data.analyticsActiveSession || null;
+    let startedAutoSession = false;
+
+    if (!active && (pendingAutoResume?.id || awaitingResumeIntent)) {
+      await chrome.storage.local.set({
+        pendingAutoResume: {
+          ...pendingAutoResume,
+          id: pendingAutoResume?.id || `${now}`,
+          url,
+          tabId,
+          favIconUrl,
+          source,
+          detectedAt: now,
+          autoIntentPrompted: pendingAutoResume?.autoIntentPrompted || false
+        },
+        awaitingResumeIntent: true,
+        lastUserActivityAt: now
+      });
+      await promptForPendingAutoIntent();
+      return;
+    }
+
+    if (!active) {
+      active = {
+        id: `${now}`,
+        startTime: now,
+        lastEventTime: now,
+        uniqueDomains: [],
+        visitCount: 0,
+        goalSelectionMade: false
+      };
+      startedAutoSession = true;
+    }
+
+    if (!analyticsActive) {
+      analyticsActive = {
+        id: active?.id || `${now}`,
+        startTime: now,
+        lastEventTime: now,
+        uniqueDomains: [],
+        visitCount: 0,
+        goalSelectionMade: active?.goalSelectionMade ?? false
+      };
+    }
+
+    if (startedAutoSession) {
+      await setLastUserActivity(now);
+    }
+
+    active.lastEventTime = now;
+    active.visitCount += 1;
+
+    if (!active.uniqueDomains.includes(visit.domain)) {
+      active.uniqueDomains.push(visit.domain);
+    }
+
+    visit.sessionId = active.id;
+    const analyticsVisit = {
+      ...visit,
+      sessionId: analyticsActive.id
     };
-  }
 
-  // The first tracked event after inactivity should resume activity state so
-  // subsequent tab switches do not keep spawning new auto sessions.
-  if (startedAutoSession) {
-    await setLastUserActivity(now);
-  }
+    visits.push(visit);
+    analyticsVisits.push(analyticsVisit);
 
-  active.lastEventTime = now;
-  active.visitCount += 1;
+    await chrome.storage.local.set({
+      visits,
+      activeSession: active,
+      analyticsVisits,
+      pendingAutoResume: null,
+      awaitingResumeIntent: false,
+      analyticsActiveSession: {
+        ...analyticsActive,
+        lastEventTime: now,
+        visitCount: (analyticsActive.visitCount || 0) + 1,
+        uniqueDomains: analyticsActive.uniqueDomains?.includes(analyticsVisit.domain)
+          ? analyticsActive.uniqueDomains
+          : [...(analyticsActive.uniqueDomains || []), analyticsVisit.domain]
+      }
+    });
 
-  if (!active.uniqueDomains.includes(visit.domain)) {
-    active.uniqueDomains.push(visit.domain);
-  }
+    await rebuildSessions();
+    await rebuildAnalyticsSessions();
+    await maybeNotifySessionOverrun(active);
+    await maybeNotifyMissingGoal(active);
 
-  visit.sessionId = active.id;
-  const analyticsVisit = {
-    ...visit,
-    sessionId: analyticsActive.id
-  };
-
-  visits.push(visit);
-  analyticsVisits.push(analyticsVisit);
-
-  await chrome.storage.local.set({
-    visits,
-    activeSession: active,
-    analyticsVisits,
-    analyticsActiveSession: {
-      ...analyticsActive,
-      lastEventTime: now,
-      visitCount: (analyticsActive.visitCount || 0) + 1,
-      uniqueDomains: analyticsActive.uniqueDomains?.includes(analyticsVisit.domain)
-        ? analyticsActive.uniqueDomains
-        : [...(analyticsActive.uniqueDomains || []), analyticsVisit.domain]
+    if (startedAutoSession) {
+      await promptForAutoSessionIntent(active.id);
     }
   });
-
-  await rebuildSessions();
-  await rebuildAnalyticsSessions();
-  await maybeNotifySessionOverrun(active);
-  await maybeNotifyMissingGoal(active);
-
-  if (startedAutoSession) {
-    await promptForAutoSessionIntent(active.id);
-  }
 }
 
 async function maybeNotifyMissingGoal(activeSession) {
@@ -783,7 +1005,12 @@ async function runSessionMonitorTick() {
   const now = Date.now();
   const idleState = await refreshIdleState();
   const browserInactive = isIdleStateInactive(idleState);
-  const data = await chrome.storage.local.get(["activeSession", "analyticsActiveSession"]);
+  const data = await chrome.storage.local.get([
+    "activeSession",
+    "analyticsActiveSession",
+    "pendingAutoResume",
+    "awaitingResumeIntent"
+  ]);
   const active = data.activeSession;
   const analyticsActive = data.analyticsActiveSession;
   const updates = {};
@@ -792,6 +1019,8 @@ async function runSessionMonitorTick() {
     if (browserInactive && !videoPlaying) {
       await maybeNotifySessionEnded(active);
       updates.activeSession = null;
+      updates.pendingAutoResume = null;
+      updates.awaitingResumeIntent = true;
       lastOverrunNotificationSessionId = null;
       lastGoalReminderSessionId = null;
       lastEndingSoonNotificationSessionId = null;
@@ -816,7 +1045,7 @@ async function runSessionMonitorTick() {
 
 function ensureSessionMonitorAlarm() {
   chrome.alarms.create(SESSION_MONITOR_ALARM, {
-    periodInMinutes: 1
+    periodInMinutes: 0.5
   });
 }
 
@@ -824,8 +1053,22 @@ async function resumeFromActiveTab(source = "activity-resume") {
   try {
     if (!chromeAppFocused) return false;
 
-    const { activeSession } = await chrome.storage.local.get(["activeSession"]);
-    if (activeSession?.id) return false;
+    const { activeSession, pendingAutoResume, awaitingResumeIntent } = await chrome.storage.local.get([
+      "activeSession",
+      "pendingAutoResume",
+      "awaitingResumeIntent"
+    ]);
+    if (activeSession?.id) {
+      if (activeSession.goalSelectionMade !== true) {
+        await promptForAutoSessionIntent(activeSession.id);
+      }
+      return false;
+    }
+
+    if (awaitingResumeIntent && pendingAutoResume?.id) {
+      await promptForPendingAutoIntent();
+      return true;
+    }
 
     const tabs = await chrome.tabs.query({
       active: true,
@@ -834,7 +1077,7 @@ async function resumeFromActiveTab(source = "activity-resume") {
     const activeTab = tabs?.[0];
     if (!activeTab?.url) return false;
 
-    await logVisit(activeTab.url, source, activeTab.id ?? null, activeTab.favIconUrl || "");
+    await stagePendingAutoResume(activeTab, source, Date.now());
     return true;
   } catch {
     return false;
@@ -912,15 +1155,6 @@ chrome.runtime.onStartup.addListener(async () => {
     await refreshIdleState();
     await rebuildSessions();
     await rebuildAnalyticsSessions();
-    const tabs = await chrome.tabs.query({
-      active: true,
-      currentWindow: true
-    });
-
-    const activeTab = tabs?.[0];
-    if (activeTab?.url) {
-      await logVisit(activeTab.url, "browser-startup", activeTab.id, activeTab.favIconUrl || "");
-    }
   } catch {}
 });
 
@@ -937,7 +1171,9 @@ chrome.runtime.onInstalled.addListener(async () => {
       analyticsVisits,
       analyticsSessions,
       analyticsActiveSession,
-      analyticsSessionIntents
+      analyticsSessionIntents,
+      pendingAutoResume,
+      awaitingResumeIntent
     } =
       await chrome.storage.local.get([
         "visits",
@@ -949,7 +1185,9 @@ chrome.runtime.onInstalled.addListener(async () => {
         "analyticsVisits",
         "analyticsSessions",
         "analyticsActiveSession",
-        "analyticsSessionIntents"
+        "analyticsSessionIntents",
+        "pendingAutoResume",
+        "awaitingResumeIntent"
       ]);
 
     if (!visits) await chrome.storage.local.set({ visits: [] });
@@ -963,6 +1201,12 @@ chrome.runtime.onInstalled.addListener(async () => {
     if (!analyticsSessionIntents) {
       await chrome.storage.local.set({ analyticsSessionIntents: sessionIntents || [] });
     }
+    if (pendingAutoResume == null) {
+      await chrome.storage.local.set({ pendingAutoResume: null });
+    }
+    if (awaitingResumeIntent == null) {
+      await chrome.storage.local.set({ awaitingResumeIntent: false });
+    }
     if (inactivityThresholdMinutes == null) {
       await chrome.storage.local.set({ inactivityThresholdMinutes: DEFAULT_INACTIVITY_THRESHOLD_MINUTES });
     }
@@ -970,15 +1214,6 @@ chrome.runtime.onInstalled.addListener(async () => {
     await refreshIdleState();
     await rebuildSessions();
     await rebuildAnalyticsSessions();
-
-    const tabs = await chrome.tabs.query({
-      active: true,
-      currentWindow: true
-    });
-    const activeTab = tabs?.[0];
-    if (activeTab?.url) {
-      await logVisit(activeTab.url, "extension-update", activeTab.id, activeTab.favIconUrl || "");
-    }
   } catch {}
 });
 
@@ -1011,7 +1246,14 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
   chromeAppFocused = windowId !== chrome.windows.WINDOW_ID_NONE;
 
   if (chromeAppFocused) {
-    resumeFromActiveTab("chrome-focus-resume").catch(() => {});
+    ensureAutoIntentPromptForActiveSession()
+      .then((promptedExisting) => {
+        if (!promptedExisting) {
+          return resumeFromActiveTab("chrome-focus-resume");
+        }
+        return false;
+      })
+      .catch(() => {});
   }
 });
 
@@ -1065,6 +1307,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === "stopCurrentSession") {
     stopCurrentSession()
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: String(error) }));
+
+    return true;
+  }
+
+  if (msg.type === "acceptPendingAutoResumeWithoutGoal") {
+    acceptPendingAutoResumeWithoutGoal()
       .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: String(error) }));
 
@@ -1142,7 +1392,10 @@ chrome.idle.onStateChanged.addListener((state) => {
     (async () => {
       await setLastUserActivity(Date.now());
       if (chromeAppFocused) {
-        await resumeFromActiveTab("idle-resume");
+        const promptedExisting = await ensureAutoIntentPromptForActiveSession();
+        if (!promptedExisting) {
+          await resumeFromActiveTab("idle-resume");
+        }
       }
     })().catch(() => {});
     return;
