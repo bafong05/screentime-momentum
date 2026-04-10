@@ -21,6 +21,9 @@
 
     <div id="intentChooser" class="chooserCard" hidden>
       <div class="chooserTitle" id="chooserTitle">Set intended duration</div>
+      <div class="chooserOtherRow">
+        <input id="sessionNameInput" type="text" maxlength="80" placeholder="Session name (optional)" />
+      </div>
       <div class="chooserOptions">
         <button class="intentOption" type="button" data-minutes="5">Real quick &lt;5 min</button>
         <button class="intentOption" type="button" data-minutes="15">15 min</button>
@@ -28,9 +31,6 @@
         <button class="intentOption" type="button" data-minutes="45">45 min</button>
         <button class="intentOption" type="button" data-minutes="60">60 min</button>
         <button class="intentOption" type="button" data-no-goal="true">No goal</button>
-      </div>
-      <div class="chooserOtherRow">
-        <input id="sessionNameInput" type="text" maxlength="80" placeholder="Session name (optional)" />
       </div>
       <div class="chooserOtherRow">
         <button id="otherIntentBtn" type="button" class="otherIntentBtn">Other</button>

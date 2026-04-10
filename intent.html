@@ -13,6 +13,12 @@
         <h1 id="intentTitle">Choose intended duration for new session</h1>
         <p class="intentHint" id="intentHint">A new session started after inactivity. Select a goal to continue.</p>
 
+        <div class="intentOther">
+          <div class="intentOtherRow">
+            <input id="sessionNameInput" type="text" maxlength="80" placeholder="Session name (optional)" />
+          </div>
+        </div>
+
         <div class="intentOptions">
           <button class="intentOption" type="button" data-minutes="5">Real quick &lt;5 min</button>
           <button class="intentOption" type="button" data-minutes="15">15 min</button>
@@ -20,12 +26,6 @@
           <button class="intentOption" type="button" data-minutes="45">45 min</button>
           <button class="intentOption" type="button" data-minutes="60">1 hr</button>
           <button class="intentOption" type="button" data-no-goal="true">No goal</button>
-        </div>
-
-        <div class="intentOther">
-          <div class="intentOtherRow">
-            <input id="sessionNameInput" type="text" maxlength="80" placeholder="Session name (optional)" />
-          </div>
         </div>
 
         <div class="intentOther">

@@ -101,6 +101,7 @@ body.popup-min.chooserOnly .popupActions {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
+  margin-top: 10px;
 }
 
 .intentOption,
@@ -112,6 +113,11 @@ body.popup-min.chooserOnly .popupActions {
   margin-top: 8px;
   display: grid;
   gap: 8px;
+}
+
+.chooserCard > .chooserOtherRow:first-of-type {
+  margin-top: 10px;
+  margin-bottom: 2px;
 }
 
 #sessionNameInput {

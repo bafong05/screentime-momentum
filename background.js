@@ -54,6 +54,8 @@ const SESSION_ENDING_SOON_ALARM = "session-ending-soon";
 const NO_GOAL_REMINDER_DELAY_MS = 10 * 1000;
 const DEFAULT_NO_GOAL_HOURLY_INTERVAL_HOURS = 1;
 const NO_GOAL_INTERVAL_OPTIONS_HOURS = [0.25, 0.5, 1, 2];
+const AI_ASSISTANT_BACKEND_URL = "http://127.0.0.1:8000/analytics/ai";
+const REPEAT_VISIT_COLLAPSE_WINDOW_MS = 45 * 1000;
 
 function isIdleStateInactive(state) {
   return state === "idle" || state === "locked";
@@ -482,6 +484,7 @@ async function stopCurrentSession() {
   await chrome.storage.local.set({
     activeSession: null,
     analyticsActiveSession: null,
+    pendingManualSession: null,
     pendingAutoResume: null,
     awaitingResumeIntent: false,
     lastUserActivityAt: Date.now()
@@ -770,18 +773,74 @@ async function logVisit(url, source, tabId = null, favIconUrl = "") {
     const data = await chrome.storage.local.get([
       "visits",
       "activeSession",
+      "pendingManualSession",
       "pendingAutoResume",
       "awaitingResumeIntent",
+      "manualSessionStarts",
       "analyticsVisits",
       "analyticsActiveSession"
     ]);
     const visits = data.visits || [];
     const analyticsVisits = data.analyticsVisits || [];
     let active = data.activeSession || null;
+    const pendingManualSession = data.pendingManualSession || null;
     const pendingAutoResume = data.pendingAutoResume || null;
     const awaitingResumeIntent = Boolean(data.awaitingResumeIntent);
+    const manualSessionStarts = Array.isArray(data.manualSessionStarts) ? data.manualSessionStarts.slice() : [];
     let analyticsActive = data.analyticsActiveSession || null;
     let startedAutoSession = false;
+    let startedPendingManualSession = false;
+    const findLatestMatchingVisitIndex = (list) => {
+      for (let i = list.length - 1; i >= 0; i -= 1) {
+        const row = list[i];
+        if (!row) continue;
+        if (row.url !== url) continue;
+        if (row.tabId == null || tabId == null || row.tabId !== tabId) continue;
+        return i;
+      }
+      return -1;
+    };
+
+    const latestVisitIndex = findLatestMatchingVisitIndex(visits);
+    const latestVisit = latestVisitIndex >= 0 ? visits[latestVisitIndex] : null;
+    const shouldCollapseRepeatVisit =
+      latestVisit &&
+      (
+        source === "page-reload" ||
+        (
+          source === "navigation" &&
+          now - Number(latestVisit.time || 0) <= REPEAT_VISIT_COLLAPSE_WINDOW_MS
+        )
+      );
+
+    if (shouldCollapseRepeatVisit) {
+      const nextVisits = visits.slice();
+      nextVisits[latestVisitIndex] = {
+        ...latestVisit,
+        lastActiveTime: now,
+        favIconUrl: favIconUrl || latestVisit.favIconUrl || ""
+      };
+
+      const nextAnalyticsVisits = analyticsVisits.slice();
+      const latestAnalyticsIndex = findLatestMatchingVisitIndex(nextAnalyticsVisits);
+      if (latestAnalyticsIndex >= 0) {
+        const latestAnalyticsVisit = nextAnalyticsVisits[latestAnalyticsIndex];
+        nextAnalyticsVisits[latestAnalyticsIndex] = {
+          ...latestAnalyticsVisit,
+          lastActiveTime: now,
+          favIconUrl: favIconUrl || latestAnalyticsVisit.favIconUrl || ""
+        };
+      }
+
+      await chrome.storage.local.set({
+        visits: nextVisits,
+        analyticsVisits: nextAnalyticsVisits
+      });
+      await heartbeatActiveSession(now);
+      await rebuildSessions();
+      await rebuildAnalyticsSessions();
+      return;
+    }
 
     if (!active && (pendingAutoResume?.id || awaitingResumeIntent)) {
       await chrome.storage.local.set({
@@ -800,6 +859,23 @@ async function logVisit(url, source, tabId = null, favIconUrl = "") {
       });
       await promptForPendingAutoIntent();
       return;
+    }
+
+    if (!active && pendingManualSession?.id) {
+      active = {
+        id: pendingManualSession.id,
+        startTime: now,
+        lastEventTime: now,
+        uniqueDomains: [],
+        visitCount: 0,
+        intendedMinutes:
+          pendingManualSession.intendedMinutes == null ? null : Number(pendingManualSession.intendedMinutes),
+        sessionName: normalizeSessionName(pendingManualSession.sessionName || ""),
+        goalSelectionMade: true,
+        autoIntentPrompted: false
+      };
+      startedAutoSession = true;
+      startedPendingManualSession = true;
     }
 
     if (!active) {
@@ -849,8 +925,10 @@ async function logVisit(url, source, tabId = null, favIconUrl = "") {
       visits,
       activeSession: active,
       analyticsVisits,
+      pendingManualSession: null,
       pendingAutoResume: null,
       awaitingResumeIntent: false,
+      manualSessionStarts: startedPendingManualSession ? [...manualSessionStarts, now] : manualSessionStarts,
       analyticsActiveSession: {
         ...analyticsActive,
         lastEventTime: now,
@@ -1142,6 +1220,7 @@ chrome.webNavigation.onCommitted.addListener(async (details) => {
   let favIconUrl = "";
   try {
     const tab = await chrome.tabs.get(details.tabId);
+    if (!tab?.active) return;
     favIconUrl = tab?.favIconUrl || "";
   } catch {}
 
@@ -1172,6 +1251,7 @@ chrome.runtime.onInstalled.addListener(async () => {
       analyticsSessions,
       analyticsActiveSession,
       analyticsSessionIntents,
+      pendingManualSession,
       pendingAutoResume,
       awaitingResumeIntent
     } =
@@ -1186,6 +1266,7 @@ chrome.runtime.onInstalled.addListener(async () => {
         "analyticsSessions",
         "analyticsActiveSession",
         "analyticsSessionIntents",
+        "pendingManualSession",
         "pendingAutoResume",
         "awaitingResumeIntent"
       ]);
@@ -1200,6 +1281,9 @@ chrome.runtime.onInstalled.addListener(async () => {
     if (!analyticsActiveSession) await chrome.storage.local.set({ analyticsActiveSession: activeSession || null });
     if (!analyticsSessionIntents) {
       await chrome.storage.local.set({ analyticsSessionIntents: sessionIntents || [] });
+    }
+    if (pendingManualSession == null) {
+      await chrome.storage.local.set({ pendingManualSession: null });
     }
     if (pendingAutoResume == null) {
       await chrome.storage.local.set({ pendingAutoResume: null });
@@ -1317,6 +1401,51 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     acceptPendingAutoResumeWithoutGoal()
       .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: String(error) }));
+
+    return true;
+  }
+
+  if (msg.type === "askAnalyticsAssistant") {
+    (async () => {
+      try {
+        const question = String(msg.question || "").trim();
+        if (!question) {
+          sendResponse({ ok: false, error: "Ask a question first." });
+          return;
+        }
+
+        const response = await fetch(AI_ASSISTANT_BACKEND_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            question,
+            history: Array.isArray(msg.history) ? msg.history : [],
+            context: msg.context || {}
+          })
+        });
+
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const apiError = payload?.detail || payload?.error || `Assistant backend failed (${response.status})`;
+          sendResponse({ ok: false, error: apiError });
+          return;
+        }
+
+        const answer = String(payload?.answer || payload?.report || "").trim();
+
+        sendResponse({
+          ok: true,
+          answer: answer || "I couldn't extract an answer from the assistant backend."
+        });
+      } catch (error) {
+        sendResponse({
+          ok: false,
+          error: "Could not reach the AI assistant backend at http://127.0.0.1:8000. Start the local server and try again."
+        });
+      }
+    })();
 
     return true;
   }

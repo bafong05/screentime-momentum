@@ -20,6 +20,13 @@ const expandedSequenceLabels = new Set();
 let historySearchQuery = "";
 let historySearchScope = "all";
 let footprintSelectedDomain = "";
+const ASSISTANT_MAX_HISTORY_MESSAGES = 8;
+const ASSISTANT_DEFAULT_MESSAGES = [
+  {
+    role: "assistant",
+    content: "Ask about your sessions, switching patterns, top sites, or time-of-day habits. I answer from the browsing data already in your dashboard."
+  }
+];
 const dashboardSessionHelpers = window.ScreenTimeSessionHelpers || null;
 const startManualSession = dashboardSessionHelpers?.startManualSession || null;
 let dashboardState = {
@@ -28,8 +35,12 @@ let dashboardState = {
   analyticsSessions: [],
   visits: [],
   inactivityThresholdMinutes: DEFAULT_INACTIVITY_THRESHOLD_MINUTES,
-  noGoalHourlyIntervalHours: DEFAULT_NO_GOAL_HOURLY_INTERVAL_HOURS
+  noGoalHourlyIntervalHours: DEFAULT_NO_GOAL_HOURLY_INTERVAL_HOURS,
+  notificationPreferences: null,
+  assistantMessages: ASSISTANT_DEFAULT_MESSAGES.slice()
 };
+let assistantLoading = false;
+let assistantFollowUps = [];
 
 function showDashboardError(message) {
   const shell = document.querySelector(".appShell");
@@ -209,6 +220,85 @@ function escapeHtml(str) {
     const map = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
     return map[char];
   });
+}
+
+function summarizeAssistantText(text) {
+  return String(text || "").trim().replace(/\s+/g, " ").slice(0, 4000);
+}
+
+function normalizeAssistantMessages(messages) {
+  const rows = Array.isArray(messages) ? messages : [];
+  const normalized = rows
+    .map((row) => ({
+      role: row?.role === "user" ? "user" : "assistant",
+      content: summarizeAssistantText(row?.content)
+    }))
+    .filter((row) => row.content);
+  return normalized.length ? normalized : ASSISTANT_DEFAULT_MESSAGES.slice();
+}
+
+function setAssistantStatus(text, isError = false) {
+  const node = document.getElementById("assistantStatus");
+  if (!node) return;
+  node.textContent = text || "";
+  node.classList.toggle("isError", Boolean(isError && text));
+}
+
+function formatAssistantContent(text) {
+  const lines = String(text || "")
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return "";
+
+  const htmlParts = [];
+  let bulletItems = [];
+
+  const flushBullets = () => {
+    if (!bulletItems.length) return;
+    htmlParts.push(`<ul>${bulletItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`);
+    bulletItems = [];
+  };
+
+  for (const line of lines) {
+    const bulletMatch = line.match(/^[-*•]\s+(.*)$/);
+    if (bulletMatch) {
+      bulletItems.push(bulletMatch[1]);
+      continue;
+    }
+    flushBullets();
+    htmlParts.push(`<p>${escapeHtml(line)}</p>`);
+  }
+  flushBullets();
+  return htmlParts.join("");
+}
+
+function buildAssistantFollowUps(question, context) {
+  const q = String(question || "").toLowerCase();
+  const anchor = String(context?.selectedAnchorSite || "").trim();
+  const followUps = [];
+
+  if (anchor) {
+    if (!q.includes("after")) {
+      followUps.push(`What usually happens after ${anchor}?`);
+    }
+    if (!q.includes("lead")) {
+      followUps.push(`What usually leads into ${anchor}?`);
+    }
+    followUps.push(`How much time do I spend on ${anchor}?`);
+  }
+
+  if (!q.includes("session")) {
+    followUps.push("Break that down by session.");
+  }
+  if (!q.includes("time of day")) {
+    followUps.push("Show the time-of-day pattern.");
+  }
+  if (!q.includes("top site")) {
+    followUps.push("What are my top sites today?");
+  }
+
+  return [...new Set(followUps)].slice(0, 3);
 }
 
 function isValidDomain(domain) {
@@ -1189,6 +1279,17 @@ function polarPoint(cx, cy, radius, angle) {
 }
 
 function ringSlicePath(cx, cy, innerRadius, outerRadius, startAngle, endAngle) {
+  if (
+    !Number.isFinite(cx) ||
+    !Number.isFinite(cy) ||
+    !Number.isFinite(innerRadius) ||
+    !Number.isFinite(outerRadius) ||
+    !Number.isFinite(startAngle) ||
+    !Number.isFinite(endAngle)
+  ) {
+    return "";
+  }
+
   const outerStart = polarPoint(cx, cy, outerRadius, startAngle);
   const outerEnd = polarPoint(cx, cy, outerRadius, endAngle);
   const innerEnd = polarPoint(cx, cy, innerRadius, endAngle);
@@ -1238,20 +1339,29 @@ function renderDistributionChart(timePerDomain) {
 
   const slices = rows
     .map(([domain, ms], index) => {
-      const sliceAngle = (ms / total) * Math.PI * 2;
+      const rawSliceAngle = (ms / total) * Math.PI * 2;
+      const sliceAngle = Math.min(rawSliceAngle, Math.PI * 2 - 0.0001);
       const start = angle;
       const end = angle + sliceAngle;
       angle = end;
+      const path = ringSlicePath(cx, cy, inner, outer, start, end);
+      if (!path) return "";
       return `
         <path
           class="distributionSlice"
-          d="${ringSlicePath(cx, cy, inner, outer, start, end)}"
+          d="${path}"
           fill="${DISTRIBUTION_COLORS[index % DISTRIBUTION_COLORS.length]}"
           data-tooltip="${domain}: ${msToPretty(ms)} (${Math.round((ms / total) * 100)}%)"
         ></path>
       `;
     })
+    .filter(Boolean)
     .join("");
+
+  if (!slices) {
+    container.innerHTML = `<div class="muted">No site time yet today.</div>`;
+    return;
+  }
 
   const legend = rows
     .map(
@@ -2193,6 +2303,243 @@ function renderTimeOfDayInsights(sessions) {
   `;
 }
 
+function renderAssistant() {
+  const thread = document.getElementById("assistantThread");
+  const input = document.getElementById("assistantInput");
+  const sendBtn = document.getElementById("assistantSendBtn");
+  if (!thread || !input || !sendBtn) return;
+
+  const messages = normalizeAssistantMessages(dashboardState.assistantMessages);
+  thread.innerHTML = messages
+    .map((message, index) => {
+      if (message.role === "user") {
+        return `
+          <div class="assistantMessage assistantMessageUser">
+            <div class="assistantBubble user">${escapeHtml(message.content)}</div>
+          </div>
+        `;
+      }
+
+      return `
+        <div class="assistantMessage assistantMessageBot">
+          <div class="assistantAvatar">AI</div>
+          <div>
+            <div class="assistantBubble bot">${formatAssistantContent(message.content)}</div>
+            ${
+              index === messages.length - 1 && assistantFollowUps.length
+                ? `<div class="assistantFollowUps">
+                    ${assistantFollowUps
+                      .map((prompt) => `<button class="assistantFollowUpChip" type="button" data-assistant-prompt="${escapeHtml(prompt)}">${escapeHtml(prompt)}</button>`)
+                      .join("")}
+                  </div>`
+                : ""
+            }
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+
+  sendBtn.disabled = assistantLoading || !String(input.value || "").trim();
+  input.disabled = assistantLoading;
+
+  if (assistantLoading) {
+    setAssistantStatus("Thinking...");
+  } else if (!document.getElementById("assistantStatus")?.textContent) {
+    setAssistantStatus("Ask about your browsing habits in plain language.");
+  }
+
+  requestAnimationFrame(() => {
+    thread.scrollTop = thread.scrollHeight;
+  });
+}
+
+function getSessionTopSitesForAssistant(session) {
+  const explicitTopSites = Array.isArray(session?.metrics?.topSites) ? session.metrics.topSites : [];
+  if (explicitTopSites.length) return explicitTopSites.slice(0, 5);
+
+  const timeEntries = Object.entries(session?.metrics?.timePerDomain || {})
+    .filter(([domain, ms]) => isDisplayDomain(domain) && Number.isFinite(ms) && ms > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([domain]) => domain);
+  if (timeEntries.length) return timeEntries.slice(0, 5);
+
+  const visitCounts = {};
+  for (const visit of session?.visits || []) {
+    if (!isDisplayDomain(visit?.domain)) continue;
+    visitCounts[visit.domain] = (visitCounts[visit.domain] || 0) + 1;
+  }
+
+  return Object.entries(visitCounts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([domain]) => domain)
+    .slice(0, 5);
+}
+
+function serializeVisitForAssistant(visit) {
+  return {
+    time: Number(visit?.time || 0),
+    label: displayLabelForVisit(visit),
+    domain: visit?.domain || "unknown",
+    url: visit?.url || "",
+    sessionId: String(visit?.sessionId || ""),
+    source: visit?.source || ""
+  };
+}
+
+function serializeSessionForAssistant(session) {
+  return {
+    id: String(session?.id || session?.visits?.[0]?.sessionId || ""),
+    name: describeSessionName(session?.metrics?.sessionName),
+    start: Number(session?.metrics?.start || 0),
+    end: Number(session?.metrics?.end || 0),
+    durationMs: Number(session?.metrics?.durationMs || 0),
+    intendedMinutes: session?.metrics?.intendedMinutes ?? null,
+    totalVisits: Number(session?.metrics?.visitCount || session?.metrics?.totalVisits || 0),
+    siteCount: Number(session?.metrics?.siteCount || 0),
+    topSites: getSessionTopSitesForAssistant(session),
+    timePerDomain: session?.metrics?.timePerDomain || {},
+    visits: (session?.visits || []).map(serializeVisitForAssistant)
+  };
+}
+
+function buildAssistantContext(liveSessions, analyticsSessions, today) {
+  const current = dashboardState.activeSession;
+  const todayTimeEntries = Object.entries(today?.timePerDomain || {})
+    .filter(([domain, ms]) => isDisplayDomain(domain) && Number.isFinite(ms) && ms > 0)
+    .sort((a, b) => b[1] - a[1]);
+  const recentSessions = today.todaySessions
+    .slice(0, 5)
+    .map((session) => ({
+      name: describeSessionName(session.metrics.sessionName),
+      start: session.metrics.start,
+      end: session.metrics.end,
+      durationMs: session.metrics.durationMs,
+      intendedMinutes: session.metrics.intendedMinutes,
+      siteCount: session.metrics.siteCount,
+      visitCount: session.metrics.visitCount,
+      topSites: getSessionTopSitesForAssistant(session)
+    }));
+
+  const topSitesToday = todayTimeEntries
+    .slice(0, 8)
+    .map(([domain, ms]) => ({
+      domain,
+      minutes: Math.round(ms / 60000),
+      visits: today.visitsPerDomain[domain] || 0
+    }));
+
+  const sequenceRows = computeTopSiteSequences(analyticsSessions).slice(0, 5).map((row) => ({
+    type: row.type,
+    sites: row.type === "loop" ? row.pair : row.sequence,
+    occurrences: row.count,
+    sessions: row.sessions
+  }));
+
+  const extendedRows = computeExtendedSessionSites(analyticsSessions).slice(0, 5).map((row) => ({
+    domain: row.domain,
+    sessions: row.sessions
+  }));
+
+  const timeOfDay = computeTimeOfDayTrends(analyticsSessions);
+
+  return {
+    currentSession: current
+      ? {
+          durationMs: Math.max(0, Date.now() - Number(current.startTime || Date.now())),
+          intendedMinutes: current.intendedMinutes,
+          name: describeSessionName(current.sessionName),
+          siteCount: Array.isArray(current.uniqueDomains) ? current.uniqueDomains.length : 0,
+          visitCount: Number(current.visitCount || 0)
+        }
+      : null,
+    todaySummary: {
+      totalTimeMs: today.totalTimeMs,
+      sessionCount: today.todaySessions.length,
+      topSites: topSitesToday,
+      hourlyMinutes: computeHourlyMinutes(today.todaySessions)
+    },
+    recentTodaySessions: recentSessions,
+    selectedAnchorSite: footprintSelectedDomain || topSitesToday[0]?.domain || "",
+    fullSessionHistory: liveSessions.map(serializeSessionForAssistant),
+    fullVisitHistory: dashboardState.visits.map(serializeVisitForAssistant),
+    analytics: {
+      workflowPatterns: sequenceRows,
+      extendedSessionSites: extendedRows,
+      peakHour: timeOfDay.topHours?.[0] || null,
+      longestSessionHour: timeOfDay.longestSessionHour || null,
+      overrunProneHour: timeOfDay.overrunProneHour || null,
+      commonActiveWindow: timeOfDay.mostCommonActiveWindow || null
+    }
+  };
+}
+
+async function persistAssistantMessages(messages) {
+  const normalized = normalizeAssistantMessages(messages).slice(-ASSISTANT_MAX_HISTORY_MESSAGES);
+  dashboardState.assistantMessages = normalized;
+  renderAssistant();
+}
+
+async function askAssistant(question) {
+  const trimmed = summarizeAssistantText(question);
+  if (!trimmed) return;
+
+  const liveSessions = buildLiveSessions(
+    dashboardState.sessions,
+    dashboardState.activeSession,
+    dashboardState.visits
+  );
+  const analyticsSessions = dashboardState.analyticsSessions.length
+    ? dashboardState.analyticsSessions
+    : liveSessions;
+  const today = computeTodayFromSessions(liveSessions);
+  const history = normalizeAssistantMessages(dashboardState.assistantMessages)
+    .filter((message) => message.content)
+    .slice(-6);
+
+  const nextMessages = [...history, { role: "user", content: trimmed }];
+  assistantLoading = true;
+  setAssistantStatus("Thinking...");
+  await persistAssistantMessages(nextMessages);
+
+  try {
+    const context = buildAssistantContext(liveSessions, analyticsSessions, today);
+    const response = await chrome.runtime.sendMessage({
+      type: "askAnalyticsAssistant",
+      question: trimmed,
+      history,
+      context
+    });
+
+    if (!response?.ok) {
+      throw new Error(response?.error || "Could not reach the AI assistant.");
+    }
+
+    await persistAssistantMessages([
+      ...nextMessages,
+      {
+        role: "assistant",
+        content: summarizeAssistantText(response.answer) || "I couldn't generate an answer from the current session data."
+      }
+    ]);
+    assistantFollowUps = buildAssistantFollowUps(trimmed, context);
+    setAssistantStatus("Answered from your saved dashboard data.");
+  } catch (error) {
+    assistantFollowUps = [];
+    dashboardState.assistantMessages = [
+      ...nextMessages,
+      {
+        role: "assistant",
+        content: `I couldn't answer that yet. ${String(error?.message || "There was a problem contacting the assistant.")}`
+      }
+    ].slice(-ASSISTANT_MAX_HISTORY_MESSAGES);
+    setAssistantStatus(error?.message || "Could not reach the AI assistant.", true);
+  } finally {
+    assistantLoading = false;
+    renderAssistant();
+  }
+}
+
 function renderSettings(minutes, statusText = "") {
   const normalized = syncInactivityThreshold(minutes);
   const input = document.getElementById("thresholdInput");
@@ -2350,7 +2697,8 @@ function renderDashboard(data) {
       missingGoal: true,
       noGoalHourly: true,
       sessionEnded: true
-    }
+    },
+    assistantMessages: normalizeAssistantMessages(dashboardState.assistantMessages)
   };
 
   const liveSessions = buildLiveSessions(
@@ -2378,6 +2726,7 @@ function renderDashboard(data) {
   renderTimeOfDayInsights(analyticsSessions);
   renderFootprintExplorer(analyticsSessions.length ? analyticsSessions : liveSessions);
   renderSettings(thresholdMinutes);
+  renderAssistant();
 }
 
 function tickCurrentSession() {
@@ -2648,6 +2997,43 @@ document.querySelectorAll(".notificationTestBtn").forEach((button) => {
       setStatusText("notificationPreferencesStatus", "Could not send preview notification.");
     }
   });
+});
+
+document.querySelectorAll("[data-assistant-prompt]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const prompt = button.dataset.assistantPrompt || "";
+    const input = document.getElementById("assistantInput");
+    if (input) input.value = prompt;
+    await askAssistant(prompt);
+  });
+});
+
+document.getElementById("assistantThread").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-assistant-prompt]");
+  if (!button) return;
+  const prompt = button.dataset.assistantPrompt || "";
+  const input = document.getElementById("assistantInput");
+  if (input) input.value = prompt;
+  await askAssistant(prompt);
+});
+
+document.getElementById("assistantSendBtn").addEventListener("click", async () => {
+  const input = document.getElementById("assistantInput");
+  const value = String(input?.value || "").trim();
+  if (!value) return;
+  if (input) input.value = "";
+  await askAssistant(value);
+});
+
+document.getElementById("assistantInput").addEventListener("input", () => {
+  renderAssistant();
+});
+
+document.getElementById("assistantInput").addEventListener("keydown", async (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    document.getElementById("assistantSendBtn").click();
+  }
 });
 
 document.getElementById("clearDataBtn").addEventListener("click", async () => {

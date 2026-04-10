@@ -126,28 +126,28 @@
                 </div>
               </div>
               <div class="assistantPlaceholder">
-                <div class="assistantThread">
+                <div id="assistantStatus" class="assistantStatus" aria-live="polite"></div>
+                <div class="assistantSuggestionRow" id="assistantSuggestions">
+                  <button class="assistantSuggestionChip" type="button" data-assistant-prompt="How much time have I spent today?">Time today</button>
+                  <button class="assistantSuggestionChip" type="button" data-assistant-prompt="What sites do I switch between the most?">Switching patterns</button>
+                  <button class="assistantSuggestionChip" type="button" data-assistant-prompt="Give me productivity insights from my sessions.">Productivity insights</button>
+                </div>
+                <div id="assistantThread" class="assistantThread">
                   <div class="assistantMessage assistantMessageBot">
                     <div class="assistantAvatar">AI</div>
                     <div class="assistantBubble bot">
-                      Hi! I'm your AI Screentime Assistant. I’ll help you understand your browsing habits,
-                      spot patterns, and turn raw activity into useful insights.
-                      <br /><br />
-                      Try asking:
-                      <br />• How much time have I spent today?
-                      <br />• What sites do I switch between the most?
-                      <br />• Give me productivity insights from my sessions
-                    </div>
-                  </div>
-                  <div class="assistantMessage assistantMessageUser">
-                    <div class="assistantBubble user">
-                      What sites do I bounce between the most?
+                      Ask about your sessions, switching patterns, top sites, or time-of-day habits. I answer from the browsing data already in your dashboard.
                     </div>
                   </div>
                 </div>
-                <div class="assistantComposer" aria-disabled="true">
-                  <span class="assistantComposerText">Ask about your browsing patterns...</span>
-                  <button class="btn primary assistantComposerBtn" type="button" disabled>Coming Soon</button>
+                <div class="assistantComposer">
+                  <textarea
+                    id="assistantInput"
+                    class="assistantComposerInput"
+                    rows="3"
+                    placeholder="Ask about your browsing patterns..."
+                  ></textarea>
+                  <button id="assistantSendBtn" class="btn primary assistantComposerBtn" type="button">Send</button>
                 </div>
               </div>
             </article>
@@ -456,6 +456,13 @@
           <button id="closeIntentModalBtn" class="intentModalClose" type="button" aria-label="Close">x</button>
         </div>
 
+        <div class="intentModalOther">
+          <div class="label">Session name</div>
+          <div class="intentModalOtherRow">
+            <input id="intentModalSessionName" type="text" maxlength="80" placeholder="What are you planning to do?" />
+          </div>
+        </div>
+
         <div class="intentModalOptions">
           <button class="intentModalOption" type="button" data-minutes="5">Real quick &lt;5 mins</button>
           <button class="intentModalOption" type="button" data-minutes="15">15 min</button>
@@ -463,13 +470,6 @@
           <button class="intentModalOption" type="button" data-minutes="45">45 min</button>
           <button class="intentModalOption" type="button" data-minutes="60">1 hr</button>
           <button class="intentModalOption" type="button" data-no-goal="true">No goal</button>
-        </div>
-
-        <div class="intentModalOther">
-          <div class="label">Session name</div>
-          <div class="intentModalOtherRow">
-            <input id="intentModalSessionName" type="text" maxlength="80" placeholder="What are you planning to do?" />
-          </div>
         </div>
 
         <div class="intentModalOther">

@@ -125,48 +125,40 @@
   async function startManualSession(minutes, sessionName = "") {
     const now = Date.now();
     const normalizedName = normalizeSessionName(sessionName);
-    const newSession = {
+    const pendingManualSession = {
       id: `${now}`,
-      startTime: now,
-      lastEventTime: now,
-      uniqueDomains: [],
-      visitCount: 0,
+      createdAt: now,
       intendedMinutes: minutes,
       sessionName: normalizedName,
       goalSelectionMade: true
     };
 
     const {
-      manualSessionStarts = [],
       sessionIntents = [],
       analyticsSessionIntents = []
     } = await chrome.storage.local.get([
-      "manualSessionStarts",
       "sessionIntents",
       "analyticsSessionIntents"
     ]);
 
-    const updatedStarts = Array.isArray(manualSessionStarts) ? manualSessionStarts.slice() : [];
-    updatedStarts.push(now);
-
     const intents = Array.isArray(sessionIntents) ? sessionIntents.slice() : [];
     const analyticsIntents = Array.isArray(analyticsSessionIntents) ? analyticsSessionIntents.slice() : [];
-    const filtered = intents.filter((intent) => intent.sessionId !== newSession.id);
-    const filteredAnalytics = analyticsIntents.filter((intent) => intent.sessionId !== newSession.id);
-    const nextIntent = buildIntentRecord(newSession.id, minutes, normalizedName);
+    const filtered = intents.filter((intent) => intent.sessionId !== pendingManualSession.id);
+    const filteredAnalytics = analyticsIntents.filter((intent) => intent.sessionId !== pendingManualSession.id);
+    const nextIntent = buildIntentRecord(pendingManualSession.id, minutes, normalizedName);
 
     await chrome.storage.local.set({
-      activeSession: newSession,
-      analyticsActiveSession: newSession,
+      activeSession: null,
+      analyticsActiveSession: null,
+      pendingManualSession,
       pendingAutoResume: null,
       awaitingResumeIntent: false,
-      manualSessionStarts: updatedStarts,
       sessionIntents: nextIntent ? [...filtered, nextIntent] : filtered,
       analyticsSessionIntents: nextIntent ? [...filteredAnalytics, nextIntent] : filteredAnalytics
     });
 
     chrome.runtime.sendMessage({ type: "rebuildSessions" }, () => {});
-    return newSession;
+    return pendingManualSession;
   }
 
   window.ScreenTimeSessionHelpers = {

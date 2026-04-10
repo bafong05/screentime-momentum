@@ -8,8 +8,11 @@ const normalizeSessionName =
   ((value) => String(value || "").trim().replace(/\s+/g, " ").slice(0, 80));
 const saveIntentToActiveSession = sessionHelpers?.saveIntentToActiveSession || null;
 const startManualSession = sessionHelpers?.startManualSession || null;
+let popupFailed = false;
+let refreshTimerId = null;
 
 function showPopupError(message) {
+  popupFailed = true;
   const heading = document.getElementById("popupHeading");
   const progressChart = document.getElementById("popupProgressChart");
   const chooser = document.getElementById("intentChooser");
@@ -32,6 +35,11 @@ function showPopupError(message) {
   document.querySelectorAll(".intentOption").forEach((button) => {
     button.disabled = true;
   });
+
+  if (refreshTimerId) {
+    window.clearInterval(refreshTimerId);
+    refreshTimerId = null;
+  }
 }
 
 function currentSessionName() {
@@ -123,6 +131,7 @@ function hideChooser() {
 }
 
 async function submitIntent(minutes) {
+  if (popupFailed) return;
   if (minutes != null && (!Number.isFinite(minutes) || minutes <= 0)) return;
   const sessionName = currentSessionName();
 
@@ -140,19 +149,23 @@ async function submitIntent(minutes) {
 }
 
 async function stopSession() {
+  if (popupFailed) return;
   await chrome.runtime.sendMessage({ type: "stopCurrentSession" });
   hideChooser();
   await refresh();
 }
 
 async function refresh() {
+  if (popupFailed) return;
   await loadInactivityThreshold();
   const { activeSession } = await chrome.storage.local.get(["activeSession"]);
   const progressChart = document.getElementById("popupProgressChart");
 
   if (!activeSession) {
     progressChart.innerHTML = buildProgressSvg("0:00", "free", 0);
-    hideChooser();
+    if (chooserMode !== "manual") {
+      hideChooser();
+    }
     return;
   }
 
@@ -174,12 +187,24 @@ async function refresh() {
   }
 }
 
+async function safeRefresh() {
+  if (popupFailed) return;
+  try {
+    await refresh();
+  } catch (error) {
+    console.error("Popup refresh failed", error);
+    showPopupError("The extension lost connection. Reload it in chrome://extensions and reopen the popup.");
+  }
+}
+
 function bindPopupEvents() {
   document.getElementById("openDashboard").addEventListener("click", () => {
+    if (popupFailed) return;
     chrome.tabs.create({ url: chrome.runtime.getURL("dashboard.html") });
   });
 
   document.getElementById("newSession").addEventListener("click", () => {
+    if (popupFailed) return;
     showChooser("manual");
   });
 
@@ -189,16 +214,19 @@ function bindPopupEvents() {
 
   document.querySelectorAll(".intentOption").forEach((button) => {
     button.addEventListener("click", () => {
+      if (popupFailed) return;
       submitIntent(button.dataset.noGoal ? null : Number(button.dataset.minutes));
     });
   });
 
   document.getElementById("otherIntentBtn").addEventListener("click", () => {
+    if (popupFailed) return;
     document.getElementById("otherIntentInputWrap").hidden = false;
     document.getElementById("otherIntentInput").focus();
   });
 
   document.getElementById("applyOtherIntent").addEventListener("click", () => {
+    if (popupFailed) return;
     const value = Number(document.getElementById("otherIntentInput").value.trim());
     submitIntent(value);
   });
@@ -218,7 +246,7 @@ async function initPopup() {
   }
 
   bindPopupEvents();
-  await refresh();
+  await safeRefresh();
 
   if (launchMode === "manual" || launchMode === "auto") {
     showChooser(launchMode);
@@ -226,10 +254,12 @@ async function initPopup() {
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
-    if (changes.activeSession || changes.inactivityThresholdMinutes) refresh();
+    if (changes.activeSession || changes.inactivityThresholdMinutes) {
+      safeRefresh();
+    }
   });
 
-  setInterval(refresh, 1000);
+  refreshTimerId = window.setInterval(safeRefresh, 1000);
 }
 
 initPopup().catch((error) => {
