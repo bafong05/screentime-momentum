@@ -64,6 +64,17 @@ def ms_to_pretty(ms: Any) -> str:
     return " ".join(parts)
 
 
+def format_answer(summary: str, bullets: list[str] | None = None, follow_up: str | None = None) -> str:
+    lines = [summary.strip()]
+    for bullet in bullets or []:
+        clean = str(bullet or "").strip()
+        if clean:
+            lines.append(f"- {clean}")
+    if follow_up:
+        lines.append(follow_up.strip())
+    return "\n".join(line for line in lines if line)
+
+
 def to_local_datetime(value: Any) -> datetime | None:
     try:
         ts = float(value or 0)
@@ -95,15 +106,28 @@ def build_domain_aliases(domain: str) -> set[str]:
     aliases.add(without_www)
     labels = without_www.split(".")
     if labels:
-        aliases.add(labels[0])
-        aliases.add(labels[0].replace("-", " "))
+        if len(labels[0]) >= 3:
+            aliases.add(labels[0])
+            aliases.add(labels[0].replace("-", " "))
     if len(labels) >= 2:
-        aliases.add(f"{labels[0]} {labels[1]}")
-        aliases.add(f"{labels[1]} {labels[0]}")
+        if len(labels[0]) >= 3 and len(labels[1]) >= 3:
+            aliases.add(f"{labels[0]} {labels[1]}")
+            aliases.add(f"{labels[1]} {labels[0]}")
     if len(labels) >= 3 and labels[-2:] == ["google", "com"]:
         aliases.add(f"google {labels[0]}")
         aliases.add(f"{labels[0]} google")
     return {alias.strip() for alias in aliases if alias.strip()}
+
+
+def contains_alias(question: str, alias: str) -> bool:
+    candidate = str(alias or "").strip().lower()
+    if not candidate:
+        return False
+    if "." in candidate:
+        return candidate in question
+    escaped = re.escape(candidate)
+    pattern = rf"(?<![a-z0-9]){escaped}(?![a-z0-9])"
+    return re.search(pattern, question) is not None
 
 
 def canonical_phrase_for_domain(domain: str) -> str | None:
@@ -171,7 +195,9 @@ def detect_question_domains(question: str, context: dict[str, Any]) -> list[str]
         for alias in aliases:
             if not alias:
                 continue
-            if alias not in q:
+            if len(alias) < 3:
+                continue
+            if not contains_alias(q, alias):
                 continue
             score = len(alias)
             if " " in alias:
@@ -226,6 +252,15 @@ def extract_time_filter(question: str) -> tuple[int | None, str]:
     return None, "all time"
 
 
+def is_generic_total_time_question(question: str) -> bool:
+    q = question.lower()
+    if not any(phrase in q for phrase in ["how much time", "total time", "time have i spent", "time did i spend"]):
+        return False
+    if any(phrase in q for phrase in [" on ", "spent on", "time on", "for ", "after ", "before ", "lead into", "leading to"]):
+        return False
+    return True
+
+
 def filter_visits(visits: list[dict[str, Any]], *, start_ms: int | None, domains: list[str]) -> list[dict[str, Any]]:
     domain_set = {domain.lower() for domain in domains}
     rows: list[dict[str, Any]] = []
@@ -273,6 +308,69 @@ def aggregate_time_for_domains(sessions: list[dict[str, Any]], domains: list[str
                 except (TypeError, ValueError):
                     continue
     return total
+
+
+def sorted_domain_times_for_sessions(sessions: list[dict[str, Any]], domains: list[str] | None = None) -> list[tuple[str, int]]:
+    domain_filter = {domain.lower() for domain in (domains or [])}
+    totals: defaultdict[str, int] = defaultdict(int)
+    for session in sessions:
+        for domain, ms in (session.get("timePerDomain") or {}).items():
+            normalized = str(domain or "").strip()
+            if not normalized:
+                continue
+            if domain_filter and normalized.lower() not in domain_filter:
+                continue
+            try:
+                totals[normalized] += int(float(ms or 0))
+            except (TypeError, ValueError):
+                continue
+    return sorted(totals.items(), key=lambda item: item[1], reverse=True)
+
+
+def iter_session_domain_paths(sessions: list[dict[str, Any]]) -> list[list[str]]:
+    paths: list[list[str]] = []
+    for session in sessions:
+        ordered_visits = sorted(
+            [visit for visit in (session.get("visits") or []) if isinstance(visit, dict)],
+            key=lambda row: to_float(row.get("time"), 0),
+        )
+        path: list[str] = []
+        for visit in ordered_visits:
+            domain = str(visit.get("domain") or "").strip().lower()
+            if not domain:
+                continue
+            if not path or path[-1] != domain:
+                path.append(domain)
+        if path:
+            paths.append(path)
+    return paths
+
+
+def compute_transition_counts(sessions: list[dict[str, Any]]) -> tuple[Counter[tuple[str, str]], Counter[str], Counter[str]]:
+    pair_counts: Counter[tuple[str, str]] = Counter()
+    after_counts: Counter[str] = Counter()
+    before_counts: Counter[str] = Counter()
+    for path in iter_session_domain_paths(sessions):
+        for current, nxt in zip(path, path[1:]):
+            pair_counts[(current, nxt)] += 1
+    return pair_counts, after_counts, before_counts
+
+
+def compute_anchor_transitions(sessions: list[dict[str, Any]], anchor: str) -> tuple[Counter[str], Counter[str]]:
+    target = str(anchor or "").strip().lower()
+    after_counts: Counter[str] = Counter()
+    before_counts: Counter[str] = Counter()
+    if not target:
+        return after_counts, before_counts
+    for path in iter_session_domain_paths(sessions):
+        for index, domain in enumerate(path):
+            if domain != target:
+                continue
+            if index + 1 < len(path):
+                after_counts[path[index + 1]] += 1
+            if index - 1 >= 0:
+                before_counts[path[index - 1]] += 1
+    return after_counts, before_counts
 
 
 def build_retrieved_context(question: str, context: dict[str, Any]) -> dict[str, Any]:
@@ -357,10 +455,14 @@ def answer_range_visit_count(question: str, context: dict[str, Any]) -> str | No
         [dt for dt in (to_local_datetime(visit.get("time")) for visit in visits) if dt],
         key=lambda dt: dt.timestamp()
     )
-    date_hint = ""
+    bullets: list[str] = []
     if ordered:
-        date_hint = f" The earliest one in that range was {ordered[0].strftime('%b %-d at %-I:%M %p')}."
-    return f"You visited {primary} {count} times {range_label.lower()}.{date_hint}"
+        bullets.append(f"First visit in that range: {ordered[0].strftime('%b %-d at %-I:%M %p')}")
+        bullets.append(f"Most recent visit: {ordered[-1].strftime('%b %-d at %-I:%M %p')}")
+    return format_answer(
+        f"You visited {primary} {count} times {range_label.lower()}.",
+        bullets,
+    )
 
 
 def answer_range_time(question: str, context: dict[str, Any]) -> str | None:
@@ -376,7 +478,167 @@ def answer_range_time(question: str, context: dict[str, Any]) -> str | None:
     primary = domains[0]
     if total_ms <= 0:
         return f"I don’t see tracked time for {primary} {range_label.lower()}."
-    return f"You spent about {ms_to_pretty(total_ms)} on {primary} {range_label.lower()}."
+    matching = sorted(
+        (
+            session for session in sessions
+            if str(primary).lower() in {str(domain).lower() for domain in (session.get("timePerDomain") or {}).keys()}
+        ),
+        key=lambda row: to_float(row.get("durationMs"), 0),
+        reverse=True,
+    )
+    bullets: list[str] = []
+    if matching:
+        longest = matching[0]
+        longest_ms = to_float((longest.get("timePerDomain") or {}).get(primary), 0)
+        bullets.append(
+            f"Longest matching session: {ms_to_pretty(longest_ms)} in {longest.get('name') or 'Unnamed session'}"
+        )
+        bullets.append(f"Matching sessions: {len(matching)}")
+    return format_answer(
+        f"You spent about {ms_to_pretty(total_ms)} on {primary} {range_label.lower()}.",
+        bullets,
+    )
+
+
+def answer_total_time(question: str, context: dict[str, Any]) -> str | None:
+    if not is_generic_total_time_question(question):
+        return None
+    start_ms, range_label = extract_time_filter(question)
+    sessions = filter_sessions(context.get("fullSessionHistory") or [], start_ms=start_ms, domains=[])
+    if not sessions:
+        return f"I don’t see any tracked browsing {range_label.lower()}."
+    total_ms = sum(int(to_float(session.get("durationMs"), 0)) for session in sessions)
+    ranked = sorted_domain_times_for_sessions(sessions)[:3]
+    bullets = []
+    if ranked:
+        bullets.append(f"Top site: {ranked[0][0]} ({ms_to_pretty(ranked[0][1])})")
+    bullets.append(f"Sessions: {len(sessions)}")
+    return format_answer(
+        f"You’ve spent {ms_to_pretty(total_ms)} {range_label.lower()}.",
+        bullets,
+        "Want that broken down by site or by session?",
+    )
+
+
+def answer_top_sites(question: str, context: dict[str, Any]) -> str | None:
+    q = question.lower()
+    if not any(phrase in q for phrase in ["top site", "top sites", "most used", "most time on", "most visited"]):
+        return None
+    start_ms, range_label = extract_time_filter(question)
+    sessions = filter_sessions(context.get("fullSessionHistory") or [], start_ms=start_ms, domains=[])
+    domain_times = sorted_domain_times_for_sessions(sessions)
+    if not domain_times:
+        return "I don’t have enough tracked browsing to identify top sites yet."
+    top_three = domain_times[:3]
+    bullets = [
+        f"{domain}: {ms_to_pretty(ms)}"
+        for domain, ms in top_three
+    ]
+    return format_answer(
+        f"Your top site {range_label.lower()} is {top_three[0][0]} at {ms_to_pretty(top_three[0][1])}.",
+        bullets,
+        "Want the same ranking by visits instead of time?",
+    )
+
+
+def answer_switching_pattern_exact(question: str, context: dict[str, Any]) -> str | None:
+    q = question.lower()
+    if not any(phrase in q for phrase in ["switch", "bounce", "between the most", "workflow"]):
+        return None
+    sessions = context.get("fullSessionHistory") or []
+    pair_counts, _, _ = compute_transition_counts(sessions)
+    if not pair_counts:
+        return "I don’t have enough multi-site history yet to identify a strong switching pattern."
+    top_pair, top_count = pair_counts.most_common(1)[0]
+    bullets = [
+        f"{src} -> {dst}: {count} transitions"
+        for (src, dst), count in pair_counts.most_common(3)
+    ]
+    return format_answer(
+        f"Your strongest switch is {top_pair[0]} to {top_pair[1]}, with {top_count} transitions.",
+        bullets,
+        "Want me to break that down by session or time of day?",
+    )
+
+
+def answer_anchor_flow(question: str, context: dict[str, Any]) -> str | None:
+    q = question.lower()
+    if not any(phrase in q for phrase in ["after", "next", "lead into", "leading to", "before"]):
+        return None
+    domains = detect_question_domains(question, context)
+    if not domains:
+        anchor = str(context.get("selectedAnchorSite") or "").strip()
+        domains = [anchor] if anchor else []
+    if not domains:
+        return None
+
+    anchor = domains[0]
+    after_counts, before_counts = compute_anchor_transitions(context.get("fullSessionHistory") or [], anchor)
+
+    if any(phrase in q for phrase in ["after", "next"]):
+        if not after_counts:
+            return f"I don’t see a consistent next stop after {anchor} yet."
+        target, count = after_counts.most_common(1)[0]
+        bullets = [f"{domain}: {hits} next-stop transitions" for domain, hits in after_counts.most_common(3)]
+        return format_answer(
+            f"After {anchor}, you most often go to {target}.",
+            bullets,
+            "Want the matching incoming pattern too?",
+        )
+
+    if not before_counts:
+        return f"I don’t see a consistent incoming source leading into {anchor} yet."
+    source, count = before_counts.most_common(1)[0]
+    bullets = [f"{domain}: {hits} incoming transitions" for domain, hits in before_counts.most_common(3)]
+    return format_answer(
+        f"The strongest incoming source for {anchor} is {source}.",
+        bullets,
+        "Want to see what usually happens after it too?",
+    )
+
+
+def answer_time_of_day(question: str, context: dict[str, Any]) -> str | None:
+    q = question.lower()
+    if not any(phrase in q for phrase in ["time of day", "most active hour", "peak hour", "active hour"]):
+        return None
+    hourly = (context.get("todaySummary") or {}).get("hourlyMinutes") or []
+    if not hourly:
+        return "I don’t have enough time-of-day activity yet."
+    indexed = [(index, to_float(value, 0)) for index, value in enumerate(hourly)]
+    indexed.sort(key=lambda item: item[1], reverse=True)
+    top_hour, top_minutes = indexed[0]
+    if top_minutes <= 0:
+        return "I don’t have enough time-of-day activity yet."
+    bullets = [
+        f"{hour % 12 or 12}{'AM' if hour < 12 else 'PM'}: {round(minutes)} minutes"
+        for hour, minutes in indexed[:3]
+        if minutes > 0
+    ]
+    return format_answer(
+        f"Your most active hour today is {top_hour % 12 or 12}{'AM' if top_hour < 12 else 'PM'}.",
+        bullets,
+    )
+
+
+def answer_session_breakdown(question: str, context: dict[str, Any]) -> str | None:
+    q = question.lower()
+    if "break" not in q or "session" not in q:
+        return None
+    domains = detect_question_domains(question, context)
+    start_ms, range_label = extract_time_filter(question)
+    sessions = filter_sessions(context.get("fullSessionHistory") or [], start_ms=start_ms, domains=domains)
+    if not sessions:
+        return "I don’t have matching sessions to break down."
+    ranked = sorted(sessions, key=lambda row: to_float(row.get("durationMs"), 0), reverse=True)[:5]
+    bullets = []
+    for session in ranked:
+        start_dt = to_local_datetime(session.get("start"))
+        label = start_dt.strftime("%b %-d %-I:%M %p") if start_dt else "Unknown time"
+        bullets.append(f"{label}: {ms_to_pretty(session.get('durationMs'))} in {session.get('name') or 'Unnamed session'}")
+    return format_answer(
+        f"Here are the main matching sessions {range_label.lower()}.",
+        bullets,
+    )
 
 
 def classify_question(question: str) -> str:
@@ -395,10 +657,6 @@ def classify_question(question: str) -> str:
 
 
 def direct_answer(question: str, context: dict[str, Any]) -> str | None:
-    direct_history_answer = answer_range_visit_count(question, context) or answer_range_time(question, context)
-    if direct_history_answer:
-        return direct_history_answer
-
     kind = classify_question(question)
     today_summary = context.get("todaySummary") or {}
     recent_sessions = context.get("recentTodaySessions") or []
@@ -409,11 +667,31 @@ def direct_answer(question: str, context: dict[str, Any]) -> str | None:
         session_count = today_summary.get("sessionCount") or 0
         current_session = context.get("currentSession") or {}
         current_ms = current_session.get("durationMs") or 0
-        return (
-            f"Today you've spent {ms_to_pretty(total_ms)} across {session_count} "
-            f"{'session' if session_count == 1 else 'sessions'}. "
-            f"Your current session is {ms_to_pretty(current_ms)}."
+        top_sites = today_summary.get("topSites") or []
+        bullets = []
+        if top_sites:
+            bullets.append(f"Top site today: {top_sites[0]['domain']} ({top_sites[0].get('minutes', 0)}m)")
+        if current_session:
+            bullets.append(f"Current session: {ms_to_pretty(current_ms)}")
+        return format_answer(
+            f"Today you've spent {ms_to_pretty(total_ms)} across {session_count} {'session' if session_count == 1 else 'sessions'}.",
+            bullets,
+            "Want a breakdown by site or by session?",
         )
+
+    direct_history_answer = (
+        answer_total_time(question, context)
+        or
+        answer_range_visit_count(question, context)
+        or answer_range_time(question, context)
+        or answer_top_sites(question, context)
+        or answer_anchor_flow(question, context)
+        or answer_switching_pattern_exact(question, context)
+        or answer_time_of_day(question, context)
+        or answer_session_breakdown(question, context)
+    )
+    if direct_history_answer:
+        return direct_history_answer
 
     if kind == "top_site_today":
         top_sites = today_summary.get("topSites") or []
@@ -421,13 +699,13 @@ def direct_answer(question: str, context: dict[str, Any]) -> str | None:
             return "I don't have enough tracked browsing yet today to identify a top site."
         top = top_sites[0]
         follow_up = top_sites[1]["domain"] if len(top_sites) > 1 else None
-        sentence = (
-            f"Your top site today is {top['domain']} with about {top.get('minutes', 0)} minutes "
-            f"across {top.get('visits', 0)} visits."
-        )
+        bullets = [f"Visits: {top.get('visits', 0)}"]
         if follow_up:
-            sentence += f" The next closest site is {follow_up}."
-        return sentence
+            bullets.append(f"Next closest site: {follow_up}")
+        return format_answer(
+            f"Your top site today is {top['domain']} with about {top.get('minutes', 0)} minutes.",
+            bullets,
+        )
 
     if kind == "sessions_today":
         session_count = today_summary.get("sessionCount") or 0
@@ -435,9 +713,10 @@ def direct_answer(question: str, context: dict[str, Any]) -> str | None:
             return "I don't see any tracked sessions for today yet."
         longest = max(recent_sessions, key=lambda row: row.get("durationMs", 0), default=None)
         if longest:
-            return (
-                f"You've had {session_count} sessions today. "
-                f"Your longest recent session was {longest.get('name', 'Unnamed session')} at {ms_to_pretty(longest.get('durationMs', 0))}."
+            return format_answer(
+                f"You've had {session_count} sessions today.",
+                [f"Longest recent session: {longest.get('name', 'Unnamed session')} at {ms_to_pretty(longest.get('durationMs', 0))}"],
+                "Want me to break those down by site?",
             )
         return f"You've had {session_count} sessions today."
 
@@ -450,13 +729,14 @@ def direct_answer(question: str, context: dict[str, Any]) -> str | None:
         if not sites:
             return "I can see a switching pattern, but I don't have the site names cleanly enough to summarize it."
         if len(sites) == 2 and top.get("type") == "loop":
-            return (
-                f"Your strongest switching loop is between {sites[0]} and {sites[1]}. "
-                f"I saw {top.get('occurrences', 0)} back-and-forth transitions across {top.get('sessions', 0)} sessions."
+            return format_answer(
+                f"Your strongest switching loop is between {sites[0]} and {sites[1]}.",
+                [f"{top.get('occurrences', 0)} back-and-forth transitions", f"{top.get('sessions', 0)} sessions"],
+                "Want to know what usually starts that loop?",
             )
-        return (
-            f"One of your strongest browsing paths is {' -> '.join(sites)}. "
-            f"It appeared {top.get('occurrences', 0)} times across {top.get('sessions', 0)} sessions."
+        return format_answer(
+            f"One of your strongest browsing paths is {' -> '.join(sites)}.",
+            [f"{top.get('occurrences', 0)} occurrences", f"{top.get('sessions', 0)} sessions"],
         )
 
     return None
