@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: screen-time-momentum-ai
+    runtime: python
+    buildCommand: pip install -r requirements-ai.txt
+    startCommand: uvicorn ai_backend:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: PYTHON_VERSION
+        value: 3.13.2

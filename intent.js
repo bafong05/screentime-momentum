@@ -8,6 +8,7 @@ const startManualSession = sessionHelpers?.startManualSession || null;
 let intentSubmitted = false;
 let dismissingAutoPrompt = false;
 let autoDismissTimer = null;
+let autoPromptDismissNotified = false;
 
 function showIntentError(message) {
   const shell = document.querySelector(".intentShell");
@@ -48,6 +49,29 @@ async function closeSelf() {
   window.close();
 }
 
+async function closeAllIntentWindows() {
+  const intentBaseUrl = chrome.runtime.getURL("intent.html");
+  const windows = await chrome.windows.getAll({ populate: true });
+  const tabIds = [];
+
+  for (const win of windows) {
+    for (const tab of win.tabs || []) {
+      if (tab?.id && tab?.url && tab.url.startsWith(intentBaseUrl)) {
+        tabIds.push(tab.id);
+      }
+    }
+  }
+
+  if (tabIds.length) {
+    try {
+      await chrome.tabs.remove(tabIds);
+      return;
+    } catch {}
+  }
+
+  await closeSelf();
+}
+
 async function submitIntent(minutes) {
   if (minutes != null && (!Number.isFinite(minutes) || minutes <= 0)) return;
   intentSubmitted = true;
@@ -61,7 +85,7 @@ async function submitIntent(minutes) {
     await startManualSession(minutes, sessionName);
   }
 
-  await closeSelf();
+  await closeAllIntentWindows();
 }
 
 async function dismissAutoPromptWithoutSelection() {
@@ -69,10 +93,11 @@ async function dismissAutoPromptWithoutSelection() {
   dismissingAutoPrompt = true;
 
   try {
-    await chrome.runtime.sendMessage({ type: "acceptPendingAutoResumeWithoutGoal" });
+    await chrome.runtime.sendMessage({ type: "dismissPendingAutoResumePrompt" });
+    autoPromptDismissNotified = true;
   } catch {}
 
-  await closeSelf();
+  await closeAllIntentWindows();
 }
 
 function scheduleAutoDismissIfIgnored() {
@@ -90,6 +115,14 @@ function cancelAutoDismiss() {
     window.clearTimeout(autoDismissTimer);
     autoDismissTimer = null;
   }
+}
+
+function notifyAutoPromptDismissed() {
+  if (mode !== "auto" || intentSubmitted || autoPromptDismissNotified) return;
+  autoPromptDismissNotified = true;
+  try {
+    chrome.runtime.sendMessage({ type: "dismissPendingAutoResumePrompt" });
+  } catch {}
 }
 
 function bindIntentEvents() {
@@ -124,6 +157,8 @@ async function initIntentPage() {
   if (mode === "auto") {
     window.addEventListener("blur", scheduleAutoDismissIfIgnored);
     window.addEventListener("focus", cancelAutoDismiss);
+    window.addEventListener("pagehide", notifyAutoPromptDismissed);
+    window.addEventListener("beforeunload", notifyAutoPromptDismissed);
   }
 }
 

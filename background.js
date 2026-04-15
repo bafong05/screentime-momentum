@@ -47,6 +47,9 @@ let lastGoalReminderSessionId = null;
 let lastEndingSoonNotificationSessionId = null;
 let lastSessionEndedNotificationSessionId = null;
 let logVisitChain = Promise.resolve();
+let autoIntentPromptChain = Promise.resolve();
+let autoIntentPopupWindowId = null;
+let autoIntentPopupTabId = null;
 const SESSION_MONITOR_ALARM = "session-monitor";
 const SESSION_OVERRUN_ALARM = "session-overrun-check";
 const SESSION_GOAL_REMINDER_ALARM = "session-goal-reminder";
@@ -54,8 +57,13 @@ const SESSION_ENDING_SOON_ALARM = "session-ending-soon";
 const NO_GOAL_REMINDER_DELAY_MS = 10 * 1000;
 const DEFAULT_NO_GOAL_HOURLY_INTERVAL_HOURS = 1;
 const NO_GOAL_INTERVAL_OPTIONS_HOURS = [0.25, 0.5, 1, 2];
-const AI_ASSISTANT_BACKEND_URL = "http://127.0.0.1:8000/analytics/ai";
+const DEPLOYED_AI_ASSISTANT_BACKEND_URL = "https://screen-time-momentum-ai.onrender.com/analytics/ai";
+const LOCAL_AI_ASSISTANT_BACKEND_URL = "http://127.0.0.1:8000/analytics/ai";
 const REPEAT_VISIT_COLLAPSE_WINDOW_MS = 45 * 1000;
+
+function getAiAssistantBackendUrl() {
+  return DEPLOYED_AI_ASSISTANT_BACKEND_URL || LOCAL_AI_ASSISTANT_BACKEND_URL;
+}
 
 function isIdleStateInactive(state) {
   return state === "idle" || state === "locked";
@@ -254,6 +262,63 @@ function shouldIgnoreExtensionPage(url) {
   } catch {
     return false;
   }
+}
+
+async function findExistingAutoIntentPopup() {
+  if (autoIntentPopupWindowId != null) {
+    try {
+      const existingWindow = await chrome.windows.get(autoIntentPopupWindowId, { populate: true });
+      const existingTab = (existingWindow.tabs || []).find((tab) => {
+        if (autoIntentPopupTabId != null && tab.id === autoIntentPopupTabId) return true;
+        return Boolean(tab?.url && tab.url.startsWith(chrome.runtime.getURL("intent.html")));
+      });
+      if (existingTab?.id && existingWindow?.id != null) {
+        autoIntentPopupWindowId = existingWindow.id;
+        autoIntentPopupTabId = existingTab.id;
+        return { windowId: existingWindow.id, tabId: existingTab.id };
+      }
+    } catch {
+      autoIntentPopupWindowId = null;
+      autoIntentPopupTabId = null;
+    }
+  }
+
+  const popupBaseUrl = chrome.runtime.getURL("intent.html");
+  try {
+    const windows = await chrome.windows.getAll({ populate: true });
+    for (const win of windows) {
+      for (const tab of win.tabs || []) {
+        if (!tab?.url) continue;
+        if (tab.url.startsWith(popupBaseUrl)) {
+          autoIntentPopupWindowId = win.id ?? null;
+          autoIntentPopupTabId = tab.id ?? null;
+          return { windowId: win.id, tabId: tab.id };
+        }
+      }
+    }
+  } catch {}
+  autoIntentPopupWindowId = null;
+  autoIntentPopupTabId = null;
+  return null;
+}
+
+async function ensureSingleAutoIntentPopup(createPopup) {
+  return autoIntentPromptChain = autoIntentPromptChain.then(async () => {
+    const existing = await findExistingAutoIntentPopup();
+    if (existing?.windowId) {
+      try {
+        await chrome.windows.update(existing.windowId, { focused: true });
+      } catch {}
+      return false;
+    }
+
+    const created = await createPopup();
+    if (created?.id != null) {
+      autoIntentPopupWindowId = created.id;
+      autoIntentPopupTabId = created.tabs?.[0]?.id ?? null;
+    }
+    return true;
+  }).catch(() => false);
 }
 
 function toDomain(url) {
@@ -511,9 +576,15 @@ async function promptForAutoSessionIntent(sessionId) {
 
   if (activeSession?.id !== sessionId) return;
   if (activeSession?.goalSelectionMade === true) return;
+  const existing = await findExistingAutoIntentPopup();
   if (activeSession?.autoIntentPrompted === true) {
-    lastPromptedAutoSessionId = sessionId;
-    return;
+    if (existing?.windowId) {
+      lastPromptedAutoSessionId = sessionId;
+      try {
+        await chrome.windows.update(existing.windowId, { focused: true });
+      } catch {}
+      return;
+    }
   }
 
   const updates = {
@@ -535,20 +606,14 @@ async function promptForAutoSessionIntent(sessionId) {
 
   try {
     const popupUrl = chrome.runtime.getURL("intent.html?mode=auto");
-    const existingTabs = await chrome.tabs.query({ url: popupUrl });
-    const existingTab = existingTabs?.[0];
-
-    if (existingTab?.windowId) {
-      await chrome.windows.update(existingTab.windowId, { focused: true });
-      return;
-    }
-
-    await chrome.windows.create({
-      url: popupUrl,
-      type: "popup",
-      width: 640,
-      height: 560,
-      focused: true
+    await ensureSingleAutoIntentPopup(async () => {
+      return chrome.windows.create({
+        url: popupUrl,
+        type: "popup",
+        width: 640,
+        height: 560,
+        focused: true
+      });
     });
   } catch {}
 }
@@ -557,8 +622,7 @@ async function promptForPendingAutoIntent() {
   if (!chromeAppFocused) return;
 
   const popupUrl = chrome.runtime.getURL("intent.html?mode=auto");
-  const existingTabs = await chrome.tabs.query({ url: popupUrl });
-  const existingTab = existingTabs?.[0];
+  const existing = await findExistingAutoIntentPopup();
   const { pendingAutoResume, awaitingResumeIntent } = await chrome.storage.local.get([
     "pendingAutoResume",
     "awaitingResumeIntent"
@@ -568,31 +632,41 @@ async function promptForPendingAutoIntent() {
   if (!pendingAutoResume?.id) return;
 
   if (pendingAutoResume.autoIntentPrompted === true) {
-    if (existingTab?.windowId) {
-      await chrome.windows.update(existingTab.windowId, { focused: true });
+    if (existing?.windowId) {
+      await chrome.windows.update(existing.windowId, { focused: true });
+      return;
     }
-    return;
+
+    await chrome.storage.local.set({
+      pendingAutoResume: {
+        ...pendingAutoResume,
+        autoIntentPrompted: false
+      }
+    });
   }
+
+  const { pendingAutoResume: refreshedPendingAutoResume } = await chrome.storage.local.get([
+    "pendingAutoResume"
+  ]);
+  const nextPendingAutoResume = refreshedPendingAutoResume || pendingAutoResume;
+  if (!nextPendingAutoResume?.id) return;
 
   await chrome.storage.local.set({
     pendingAutoResume: {
-      ...pendingAutoResume,
+      ...nextPendingAutoResume,
       autoIntentPrompted: true
     }
   });
 
   try {
-    if (existingTab?.windowId) {
-      await chrome.windows.update(existingTab.windowId, { focused: true });
-      return;
-    }
-
-    await chrome.windows.create({
-      url: popupUrl,
-      type: "popup",
-      width: 640,
-      height: 560,
-      focused: true
+    await ensureSingleAutoIntentPopup(async () => {
+      return chrome.windows.create({
+        url: popupUrl,
+        type: "popup",
+        width: 640,
+        height: 560,
+        focused: true
+      });
     });
   } catch {}
 }
@@ -687,6 +761,28 @@ async function acceptPendingAutoResumeWithoutGoal() {
   await rebuildAnalyticsSessions();
   await maybeNotifyMissingGoal(newSession);
   return { ok: true, started: true };
+}
+
+async function dismissPendingAutoResumePrompt() {
+  const { pendingAutoResume, awaitingResumeIntent } = await chrome.storage.local.get([
+    "pendingAutoResume",
+    "awaitingResumeIntent"
+  ]);
+
+  if (!awaitingResumeIntent || !pendingAutoResume?.id) {
+    return { ok: true, dismissed: false };
+  }
+
+  await chrome.storage.local.set({
+    pendingAutoResume: {
+      ...pendingAutoResume,
+      autoIntentPrompted: false
+    }
+  });
+
+  autoIntentPopupWindowId = null;
+  autoIntentPopupTabId = null;
+  return { ok: true, dismissed: true };
 }
 
 async function ensureAutoIntentPromptForActiveSession() {
@@ -1204,6 +1300,20 @@ chrome.tabs.onActivated.addListener(async ({ tabId }) => {
   } catch {}
 });
 
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (autoIntentPopupTabId === tabId) {
+    autoIntentPopupTabId = null;
+    autoIntentPopupWindowId = null;
+  }
+});
+
+chrome.windows.onRemoved.addListener((windowId) => {
+  if (autoIntentPopupWindowId === windowId) {
+    autoIntentPopupWindowId = null;
+    autoIntentPopupTabId = null;
+  }
+});
+
 chrome.webNavigation.onCommitted.addListener(async (details) => {
   if (!chromeAppFocused) return;
   if (details.frameId !== 0) return;
@@ -1405,6 +1515,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === "dismissPendingAutoResumePrompt") {
+    dismissPendingAutoResumePrompt()
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: String(error) }));
+
+    return true;
+  }
+
   if (msg.type === "askAnalyticsAssistant") {
     (async () => {
       try {
@@ -1414,7 +1532,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           return;
         }
 
-        const response = await fetch(AI_ASSISTANT_BACKEND_URL, {
+        const backendUrl = getAiAssistantBackendUrl();
+
+        const response = await fetch(backendUrl, {
           method: "POST",
           headers: {
             "Content-Type": "application/json"
@@ -1440,9 +1560,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           answer: answer || "I couldn't extract an answer from the assistant backend."
         });
       } catch (error) {
+        const backendUrl = getAiAssistantBackendUrl();
         sendResponse({
           ok: false,
-          error: "Could not reach the AI assistant backend at http://127.0.0.1:8000. Start the local server and try again."
+          error: `Could not reach the AI assistant backend at ${backendUrl}.`
         });
       }
     })();
@@ -1520,12 +1641,6 @@ chrome.idle.onStateChanged.addListener((state) => {
   if (state === "active") {
     (async () => {
       await setLastUserActivity(Date.now());
-      if (chromeAppFocused) {
-        const promptedExisting = await ensureAutoIntentPromptForActiveSession();
-        if (!promptedExisting) {
-          await resumeFromActiveTab("idle-resume");
-        }
-      }
     })().catch(() => {});
     return;
   }
