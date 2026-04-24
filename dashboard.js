@@ -115,24 +115,36 @@ function describeSessionName(name) {
   return normalized || "Unnamed session";
 }
 
-function getLatestSessionReflection(sessionId) {
+function sessionReflectionMatches(entry, sessionId = "", sessionStart = 0) {
+  const targetId = String(sessionId || "");
+  const targetStart = Number(sessionStart || 0);
+  const entryId = String(entry?.sessionId || "");
+  const entryStart = Number(entry?.sessionStartTime || 0);
+  if (targetId && entryId === targetId) return true;
+  if (targetStart && entryStart === targetStart) return true;
+  return false;
+}
+
+function getLatestSessionReflection(sessionId, sessionStart = 0) {
   const target = String(sessionId || "");
-  if (!target) return null;
+  const targetStart = Number(sessionStart || 0);
+  if (!target && !targetStart) return null;
   return (dashboardState.sessionReflections || [])
-    .filter((entry) => String(entry?.sessionId || "") === target)
+    .filter((entry) => sessionReflectionMatches(entry, target, targetStart))
     .sort((a, b) => Number(b?.timestamp || 0) - Number(a?.timestamp || 0))[0] || null;
 }
 
-function getSessionReflections(sessionId) {
+function getSessionReflections(sessionId, sessionStart = 0) {
   const target = String(sessionId || "");
-  if (!target) return [];
+  const targetStart = Number(sessionStart || 0);
+  if (!target && !targetStart) return [];
   return (dashboardState.sessionReflections || [])
-    .filter((entry) => String(entry?.sessionId || "") === target)
+    .filter((entry) => sessionReflectionMatches(entry, target, targetStart))
     .sort((a, b) => Number(a?.timestamp || 0) - Number(b?.timestamp || 0));
 }
 
-function getLatestSessionEndReflection(sessionId) {
-  return getSessionReflections(sessionId)
+function getLatestSessionEndReflection(sessionId, sessionStart = 0) {
+  return getSessionReflections(sessionId, sessionStart)
     .filter((entry) => entry?.type === "session-ended")
     .sort((a, b) => Number(b?.timestamp || 0) - Number(a?.timestamp || 0))[0] || null;
 }
@@ -140,14 +152,32 @@ function getLatestSessionEndReflection(sessionId) {
 function buildSingleReflectionHtml(reflection) {
   if (!reflection?.reflection) return "";
 
-  if (reflection.type === "session-ended" || reflection.action === "inactive-end") {
+  if (
+    reflection.type === "session-ended" ||
+    /-end$/.test(String(reflection.action || "")) ||
+    reflection.action === "end"
+  ) {
+    const endLabel =
+      reflection.action === "inactive-end"
+        ? "Ended due to inactivity"
+        : reflection.action === "manual-end"
+          ? "Ended manually"
+          : reflection.action === "end"
+            ? "Ended manually"
+          : reflection.action === "browser-close-end"
+            ? "Ended when browser closed or restarted"
+            : (reflection.reflection || "Session ended");
     const lastActivityLabel = reflection.lastActivityAt
       ? `Last activity: ${fmtTime(Number(reflection.lastActivityAt))}`
       : "No recent activity recorded";
+    const details = [
+      String(reflection.reasonDetail || "").trim(),
+      lastActivityLabel
+    ].filter(Boolean).join(" • ");
     return `
       <div class="sessionReflectionNote">
-        <strong>${escapeHtml(reflection.reflection)}.</strong>
-        <span>${escapeHtml(lastActivityLabel)}</span>
+        <strong>${escapeHtml(endLabel)}.</strong>
+        <span>${escapeHtml(details)}</span>
       </div>
     `;
   }
@@ -161,8 +191,10 @@ function buildSingleReflectionHtml(reflection) {
         )
       : reflection.action === "no-goal"
         ? "Switched to no goal"
-        : reflection.action === "end"
-          ? "Ended session"
+        : reflection.action === "manual-end"
+            ? "Ended manually"
+          : reflection.action === "browser-close-end"
+            ? "Ended when browser closed or restarted"
           : "Adjusted session";
 
   return `
@@ -1696,27 +1728,99 @@ function buildProgressSvg(valueLabel, goalLabel, ratio, hasGoal = true) {
   `;
 }
 
-function buildSessionVisitsHtml(visits = []) {
-  return visits
-    .filter((visit) => isDisplayDomain(visit.domain))
-    .slice()
-    .sort((a, b) => b.time - a.time)
-    .map(
-      (visit) => `
-        <div class="sessionVisitRow">
-          <div class="sessionVisitMain">
-            <img src="${resolveFaviconSrc(visit, 32)}" alt="" class="siteFavicon" loading="lazy" referrerpolicy="no-referrer" data-hide-on-error="true" />
-            <a
-              class="sessionVisitDomain"
-              href="${hrefForVisit(visit, visit.domain)}"
-              target="_blank"
-              rel="noopener noreferrer"
-            >${escapeHtml(displayLabelForVisit(visit))}</a>
-          </div>
-          <div class="sessionVisitTime">${fmtTime(visit.time)}</div>
-        </div>
-      `
+function buildSessionTimelineItemHtml(item) {
+  if (item.type === "reflection") {
+    const reflection = item.entry || {};
+    const actionLabel =
+      reflection.action === "extend"
+        ? (
+            reflection.extensionMinutes > 0
+              ? `Extended by ${reflection.extensionMinutes} min`
+              : "Extended"
+          )
+        : reflection.action === "no-goal"
+          ? "Continued with no goal"
+        : reflection.action === "end"
+          ? "Ended manually"
+        : reflection.action === "inactive-end"
+            ? "Ended due to inactivity"
+          : reflection.action === "manual-end"
+            ? "Ended manually"
+            : reflection.action === "browser-close-end"
+              ? "Ended when browser closed or restarted"
+              : "Session update";
+
+    const reflectionMeta = (
+      /-end$/.test(String(reflection.action || "")) ||
+      reflection.action === "end"
     )
+      ? String(reflection.reasonDetail || "").trim() || String(reflection.reflection || "").trim()
+      : String(reflection.reflection || "").trim();
+
+    return `
+      <div class="sessionVisitRow sessionEventRow">
+        <div class="sessionVisitMain sessionEventMain">
+          <div class="sessionEventDot" aria-hidden="true"></div>
+          <div class="sessionEventContent">
+            <div class="sessionEventTitle">${escapeHtml(actionLabel)}</div>
+            <div class="sessionEventMeta">${escapeHtml(reflectionMeta)}</div>
+          </div>
+        </div>
+        <div class="sessionVisitTime">${fmtTime(item.time)}</div>
+      </div>
+    `;
+  }
+
+  const visit = item.entry || {};
+  return `
+    <div class="sessionVisitRow">
+      <div class="sessionVisitMain">
+        <img src="${resolveFaviconSrc(visit, 32)}" alt="" class="siteFavicon" loading="lazy" referrerpolicy="no-referrer" data-hide-on-error="true" />
+        <a
+          class="sessionVisitDomain"
+          href="${hrefForVisit(visit, visit.domain)}"
+          target="_blank"
+          rel="noopener noreferrer"
+        >${escapeHtml(displayLabelForVisit(visit))}</a>
+      </div>
+      <div class="sessionVisitTime">${fmtTime(item.time)}</div>
+    </div>
+  `;
+}
+
+function buildSessionVisitsHtml(visits = [], reflections = []) {
+  const timelineItems = [];
+
+  visits
+    .filter((visit) => isDisplayDomain(visit.domain))
+    .forEach((visit) => {
+      timelineItems.push({ type: "visit", time: Number(visit.time || 0), entry: visit });
+    });
+
+  (Array.isArray(reflections) ? reflections : [])
+    .filter((reflection) => (
+      Number(reflection?.timestamp || 0) > 0 &&
+      (
+        reflection?.action === "extend" ||
+        reflection?.action === "no-goal" ||
+        reflection?.action === "end" ||
+        reflection?.action === "inactive-end" ||
+        reflection?.action === "manual-end" ||
+        reflection?.action === "browser-close-end" ||
+        reflection?.type === "session-ended"
+      )
+    ))
+    .forEach((reflection) => {
+      timelineItems.push({
+        type: "reflection",
+        time: Number(reflection.timestamp || 0),
+        entry: reflection
+      });
+    });
+
+  return timelineItems
+    .sort((a, b) => Number(b.time || 0) - Number(a.time || 0))
+    .map((item) => buildSessionTimelineItemHtml(item))
     .join("");
 }
 
@@ -1729,24 +1833,18 @@ function buildGoalBadgeHtml(metrics = {}) {
   const addedMinutes = Math.max(0, Number(metrics.totalExtendedMinutes || 0));
   const overrunMs = metrics.overrunMs || 0;
   const overrunMinutes = msToMinutes(overrunMs);
-  const sessionReflections = getSessionReflections(metrics.sessionId || metrics.id || "");
+  const sessionReflections = getSessionReflections(metrics.sessionId || metrics.id || "", metrics.start);
 
   if (!goal && initialGoal == null) return "";
 
   const goalLabel = initialGoal != null ? `${initialGoal}m initial` : `${goal}m goal`;
   const reflectionBadges = sessionReflections
     .map((reflection) => {
-      if (reflection.type === "session-ended" || reflection.action === "inactive-end") {
-        return `<div class="goalBadge goalBadgeSecondary">Ended due to inactivity</div>`;
-      }
       if (reflection.action === "extend" && Number(reflection.extensionMinutes || 0) > 0) {
         return `<div class="goalBadge goalBadgeSecondary">Extended intentionally (+${Number(reflection.extensionMinutes)}m)</div>`;
       }
       if (reflection.action === "no-goal") {
         return `<div class="goalBadge goalBadgeSecondary">Continued with no goal</div>`;
-      }
-      if (reflection.action === "end") {
-        return `<div class="goalBadge goalBadgeSecondary">Ended intentionally</div>`;
       }
       return "";
     })
@@ -1913,7 +2011,7 @@ async function deleteSessionData(sessionId, sessionStart) {
 
   const keptVisits = visits.filter((visit) => !matchesSession(visit?.sessionId, visit?.sessionStartTime));
   const keptIntents = sessionIntents.filter((intent) => !matchesSession(intent?.sessionId, intent?.startTime));
-  const keptReflections = sessionReflections.filter((entry) => !matchesSession(entry?.sessionId, sessionStartNumber));
+  const keptReflections = sessionReflections.filter((entry) => !matchesSession(entry?.sessionId, entry?.sessionStartTime));
   const keptManualStarts = manualSessionStarts.filter((ts) => Number(ts) !== sessionStartNumber);
   const shouldClearActiveSession = activeSession && matchesSession(activeSession.id, activeSession.startTime);
 
@@ -1971,7 +2069,8 @@ function renderSessionsList(sessions) {
       const badgeSlot = row.querySelector(".sessionBadgeSlot");
       const detailsList = row.querySelector(".sessionDetailsList");
       const nameNode = row.querySelector(".sessionName");
-      const visitsHtml = buildSessionVisitsHtml(session.visits || []);
+      const sessionReflections = getSessionReflections(session.visits?.[0]?.sessionId || session.id, session.metrics?.start);
+      const visitsHtml = buildSessionVisitsHtml(session.visits || [], sessionReflections);
       row.querySelector(".sessionTime").textContent =
         `${fmtTime(session.metrics.start)} - ${fmtTime(session.metrics.end)}`;
       if (nameNode) {
@@ -2000,7 +2099,6 @@ function renderSessionsList(sessions) {
       }
       if (detailsList) {
         detailsList.innerHTML = `
-          ${buildReflectionHtml(getSessionReflections(session.visits?.[0]?.sessionId || session.id))}
           ${visitsHtml || '<div class="muted">No visits recorded.</div>'}
         `;
       }
@@ -2016,8 +2114,8 @@ function renderSessionsList(sessions) {
       const goal = session.metrics.intendedMinutes;
       const isExpanded = expandedSessionStarts.has(sessionKey);
       const validUniqueDomains = (session.metrics.uniqueDomains || []).filter(isDisplayDomain);
-      const visitsHtml = buildSessionVisitsHtml(session.visits || []);
-      const reflectionHtml = buildReflectionHtml(getSessionReflections(session.visits?.[0]?.sessionId || session.id));
+      const sessionReflections = getSessionReflections(session.visits?.[0]?.sessionId || session.id, session.metrics?.start);
+      const visitsHtml = buildSessionVisitsHtml(session.visits || [], sessionReflections);
 
       return `
         <div class="sessionRow" data-session-start="${sessionKey}">
@@ -2068,7 +2166,6 @@ function renderSessionsList(sessions) {
           </div>
           <div class="sessionDetails" ${isExpanded ? "" : "hidden"}>
             <div class="sessionDetailsList">
-              ${reflectionHtml}
               ${visitsHtml || '<div class="muted">No visits recorded.</div>'}
             </div>
           </div>
@@ -2279,28 +2376,8 @@ function renderHistoryList(sessions) {
                   const historySessionKey = `${day.dayStart}-${session.metrics.start}`;
                   const isHistorySessionExpanded = expandedHistorySessions.has(historySessionKey);
                   const validUniqueDomains = (session.metrics?.uniqueDomains || []).filter(isDisplayDomain);
-                  const visitsHtml = (session.visits || [])
-                    .filter((visit) => isDisplayDomain(visit.domain))
-                    .slice()
-                    .sort((a, b) => b.time - a.time)
-                    .map(
-                      (visit) => `
-                        <div class="sessionVisitRow">
-                          <div class="sessionVisitMain">
-                            <img src="${resolveFaviconSrc(visit, 32)}" alt="" class="siteFavicon" loading="lazy" referrerpolicy="no-referrer" data-hide-on-error="true" />
-                            <a
-                              class="sessionVisitDomain"
-                              href="${hrefForVisit(visit, visit.domain)}"
-                              target="_blank"
-                              rel="noopener noreferrer"
-                            >${escapeHtml(displayLabelForVisit(visit))}</a>
-                          </div>
-                          <div class="sessionVisitTime">${fmtTime(visit.time)}</div>
-                        </div>
-                      `
-                    )
-                    .join("");
-
+                  const sessionReflections = getSessionReflections(session.visits?.[0]?.sessionId || session.id, session.metrics?.start);
+                  const visitsHtml = buildSessionVisitsHtml(session.visits || [], sessionReflections);
                   return `
                     <div class="historySessionCard">
                       <div class="historySessionHeaderRow">
@@ -2782,7 +2859,7 @@ function serializeVisitForAssistant(visit) {
 function serializeSessionForAssistant(session) {
   const metrics = session?.metrics || {};
   const sessionId = String(session?.id || session?.visits?.[0]?.sessionId || "");
-  const latestReflection = getLatestSessionReflection(sessionId);
+  const latestReflection = getLatestSessionReflection(sessionId, session?.metrics?.start);
   return {
     id: sessionId,
     name: describeSessionName(metrics.sessionName),
@@ -2829,7 +2906,7 @@ function buildAssistantContext(liveSessions, analyticsSessions, today) {
       totalExtendedMinutes: Math.max(0, Number(session.metrics.totalExtendedMinutes || 0)),
       siteCount: session.metrics.siteCount,
       visitCount: session.metrics.visitCount,
-      latestReflection: getLatestSessionReflection(session.visits?.[0]?.sessionId || session.id || ""),
+      latestReflection: getLatestSessionReflection(session.visits?.[0]?.sessionId || session.id || "", session.metrics?.start),
       topSites: getSessionTopSitesForAssistant(session)
     }));
 

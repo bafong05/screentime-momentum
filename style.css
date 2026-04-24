@@ -1,8 +1,10 @@
-html, body.popup-min {
-  width: 320px;
-  min-height: 300px;
+html,
+body.popup-min {
+  width: 100%;
+  min-width: 320px;
+  min-height: 100dvh;
   margin: 0;
-  padding: 12px 14px;
+  padding: 0;
   overflow: auto;
   font-family: system-ui, -apple-system, Arial;
 }
@@ -10,18 +12,20 @@ html, body.popup-min {
 body.popup-min {
   display: flex;
   flex-direction: column;
+  justify-content: center;
   align-items: center;
+  padding: 16px;
 }
 
 .popupInner {
-  width: 100%;
-  max-width: 292px;
-  margin: 0 auto;
+  width: min(100%, 320px);
+  margin: auto;
 }
 
 body.popup-min.chooserOnly {
-  width: 340px;
+  width: 100%;
   min-height: 0;
+  min-width: 340px;
   padding: 14px;
 }
 

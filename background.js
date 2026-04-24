@@ -81,6 +81,8 @@ const NO_GOAL_INTERVAL_OPTIONS_HOURS = [0.25, 0.5, 1, 2];
 const DEPLOYED_AI_ASSISTANT_BACKEND_URL = "";
 const LOCAL_AI_ASSISTANT_BACKEND_URL = "http://127.0.0.1:8000/analytics/ai";
 const REPEAT_VISIT_COLLAPSE_WINDOW_MS = 45 * 1000;
+const RAW_VISIT_RETENTION_DAYS = 14;
+const MAX_STORED_RAW_VISITS = 5000;
 
 function getAiAssistantBackendBaseUrl() {
   const backendUrl = DEPLOYED_AI_ASSISTANT_BACKEND_URL || LOCAL_AI_ASSISTANT_BACKEND_URL;
@@ -143,20 +145,170 @@ async function refreshIdleState() {
   return browserIdleState;
 }
 
+function sanitizeFaviconUrl(value) {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (trimmed.length > 512) return "";
+  if (trimmed.startsWith("data:") || trimmed.startsWith("blob:")) return "";
+
+  try {
+    const parsed = new URL(trimmed);
+    if (!["http:", "https:"].includes(parsed.protocol)) return "";
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
+function compactVisitForStorage(visit, { forSession = false } = {}) {
+  if (!visit || typeof visit !== "object") return visit;
+
+  const compact = {
+    url: visit.url || "",
+    domain: visit.domain || toDomain(visit.url || ""),
+    time: Number(visit.time || 0),
+    sessionId: visit.sessionId ?? null
+  };
+
+  const favIconUrl = sanitizeFaviconUrl(visit.favIconUrl);
+  if (favIconUrl) compact.favIconUrl = favIconUrl;
+
+  if (forSession) return compact;
+
+  compact.lastActiveTime = Number(visit.lastActiveTime || visit.time || 0);
+  compact.source = visit.source || "navigation";
+  compact.tabId = visit.tabId ?? null;
+  compact.hadInteraction = Boolean(visit.hadInteraction);
+
+  if (visit.firstInteractionTime != null) {
+    compact.firstInteractionTime = Number(visit.firstInteractionTime || 0);
+  }
+
+  return compact;
+}
+
+function compactVisitList(list, options = {}) {
+  if (!Array.isArray(list)) return [];
+  return list.map((visit) => compactVisitForStorage(visit, options));
+}
+
+function pruneRawVisitList(list, { preserveSessionId = null } = {}) {
+  if (!Array.isArray(list) || !list.length) return [];
+
+  const now = Date.now();
+  const cutoff = now - RAW_VISIT_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  const preserveId = preserveSessionId == null ? null : String(preserveSessionId);
+
+  const withinRetention = list.filter((visit) => {
+    if (!visit) return false;
+    if (preserveId && String(visit.sessionId || "") === preserveId) return true;
+    return Number(visit.time || 0) >= cutoff;
+  });
+
+  if (withinRetention.length <= MAX_STORED_RAW_VISITS) {
+    return withinRetention;
+  }
+
+  const preserved = [];
+  const remaining = [];
+
+  for (const visit of withinRetention) {
+    if (preserveId && String(visit?.sessionId || "") === preserveId) {
+      preserved.push(visit);
+    } else {
+      remaining.push(visit);
+    }
+  }
+
+  const allowance = Math.max(0, MAX_STORED_RAW_VISITS - preserved.length);
+  const tail = allowance > 0 ? remaining.slice(-allowance) : [];
+  return [...tail, ...preserved].sort((a, b) => Number(a?.time || 0) - Number(b?.time || 0));
+}
+
+function compactSessionForStorage(session) {
+  if (!session || typeof session !== "object") return session;
+  return {
+    ...session,
+    visits: compactVisitList(session.visits, { forSession: true })
+  };
+}
+
+async function compactStoredVisitData() {
+  const data = await chrome.storage.local.get([
+    "visits",
+    "analyticsVisits",
+    "sessions",
+    "analyticsSessions",
+    "pendingAutoResume",
+    "activeSession",
+    "analyticsActiveSession"
+  ]);
+
+  const updates = {};
+  const preserveSessionId = data.activeSession?.id || data.analyticsActiveSession?.id || null;
+
+  const visits = pruneRawVisitList(compactVisitList(data.visits), { preserveSessionId });
+  if (JSON.stringify(visits) !== JSON.stringify(data.visits || [])) {
+    updates.visits = visits;
+  }
+
+  const analyticsVisits = pruneRawVisitList(compactVisitList(data.analyticsVisits), { preserveSessionId });
+  if (JSON.stringify(analyticsVisits) !== JSON.stringify(data.analyticsVisits || [])) {
+    updates.analyticsVisits = analyticsVisits;
+  }
+
+  const sessions = Array.isArray(data.sessions) ? data.sessions.map(compactSessionForStorage) : [];
+  if (JSON.stringify(sessions) !== JSON.stringify(data.sessions || [])) {
+    updates.sessions = sessions;
+  }
+
+  const analyticsSessions = Array.isArray(data.analyticsSessions)
+    ? data.analyticsSessions.map(compactSessionForStorage)
+    : [];
+  if (JSON.stringify(analyticsSessions) !== JSON.stringify(data.analyticsSessions || [])) {
+    updates.analyticsSessions = analyticsSessions;
+  }
+
+  if (data.pendingAutoResume) {
+    const nextPendingAutoResume = {
+      ...data.pendingAutoResume,
+      favIconUrl: sanitizeFaviconUrl(data.pendingAutoResume.favIconUrl || "")
+    };
+    if (JSON.stringify(nextPendingAutoResume) !== JSON.stringify(data.pendingAutoResume)) {
+      updates.pendingAutoResume = nextPendingAutoResume;
+    }
+  }
+
+  if (Object.keys(updates).length) {
+    await chrome.storage.local.set(updates);
+  }
+}
+
 async function rebuildSessionStore({
   visitsKey,
   sessionsKey,
   intentsKey
 }) {
-  const data = await chrome.storage.local.get([visitsKey, intentsKey]);
-  const visits = data[visitsKey] || [];
+  const data = await chrome.storage.local.get([visitsKey, intentsKey, "sessionReflections"]);
+  const visits = compactVisitList(data[visitsKey] || []);
   const sessionIntents = data[intentsKey] || [];
+  const sessionReflections = Array.isArray(data.sessionReflections) ? data.sessionReflections : [];
 
   const sessionsWithMetrics = groupIntoSessions(visits).map((session) => {
-    const metrics = session.metrics;
-    if (!metrics) return session;
-
     const sessionId = session.visits?.[0]?.sessionId;
+    const endReflection = sessionId
+      ? sessionReflections.find((entry) =>
+          String(entry?.sessionId || "") === String(sessionId) &&
+          (entry?.type === "session-ended" || entry?.action === "browser-close-end")
+        )
+      : null;
+    const endOverrideTs =
+      endReflection?.action === "browser-close-end"
+        ? Number(endReflection?.endedAt || endReflection?.timestamp || 0)
+        : null;
+    const metrics = computeSessionMetrics(session.visits, endOverrideTs);
+    if (!metrics) return session;
 
     let intent = sessionIntents.find((i) => i.sessionId === sessionId);
 
@@ -205,7 +357,7 @@ async function rebuildSessionStore({
     };
   });
 
-  await chrome.storage.local.set({ [sessionsKey]: sessionsWithMetrics });
+  await chrome.storage.local.set({ [sessionsKey]: sessionsWithMetrics.map(compactSessionForStorage) });
   return sessionsWithMetrics;
 }
 
@@ -254,8 +406,8 @@ async function markVisitInteraction(tabId, url, ts = Date.now()) {
   if (!changed) return;
 
   await chrome.storage.local.set({
-    visits: nextVisits,
-    analyticsVisits: nextAnalyticsVisits
+    visits: pruneRawVisitList(nextVisits),
+    analyticsVisits: pruneRawVisitList(nextAnalyticsVisits)
   });
   await rebuildSessions();
   await rebuildAnalyticsSessions();
@@ -444,7 +596,7 @@ function toDomain(url) {
   }
 }
 
-function computeSessionMetrics(visits) {
+function computeSessionMetrics(visits, endOverrideTs = null) {
   if (!visits.length) return null;
   const start = visits[0].time;
   const lastVisit = visits[visits.length - 1];
@@ -473,7 +625,8 @@ function computeSessionMetrics(visits) {
   const lastVisitWindow = getVisitInteractionWindow(lastVisit);
   const end = Math.max(
     lastVisit.time,
-    Number(lastVisitWindow.end || lastVisit.time)
+    Number(lastVisitWindow.end || lastVisit.time),
+    Number(endOverrideTs || 0)
   );
   const durationMs = Math.max(0, end - start);
 
@@ -728,29 +881,32 @@ async function rebuildAnalyticsSessions() {
   });
 }
 
-async function stopCurrentSession() {
+async function stopCurrentSession(reason = "manual", reasonDetail = "") {
   const {
     activeSession,
     analyticsActiveSession,
     visits = [],
-    analyticsVisits = []
+    analyticsVisits = [],
+    pendingSessionEndRecovery = null
   } = await chrome.storage.local.get([
     "activeSession",
     "analyticsActiveSession",
     "visits",
-    "analyticsVisits"
+    "analyticsVisits",
+    "pendingSessionEndRecovery"
   ]);
 
   if (!activeSession && !analyticsActiveSession) {
     return { ok: true, stopped: false };
   }
 
-  const synchronizeFinalInteraction = (list, session) => {
+  const synchronizeFinalInteraction = (list, session, ts = null) => {
     if (!Array.isArray(list) || !session?.id) return list;
 
     const finalInteractionTs = Math.max(
       Number(session?.lastEventTime || 0),
-      Number(session?.startTime || 0)
+      Number(session?.startTime || 0),
+      Number(ts || 0)
     );
     if (!finalInteractionTs) return list;
 
@@ -778,14 +934,39 @@ async function stopCurrentSession() {
     return list;
   };
 
-  const syncedVisits = synchronizeFinalInteraction(visits, activeSession);
-  const syncedAnalyticsVisits = synchronizeFinalInteraction(analyticsVisits, analyticsActiveSession || activeSession);
+  const finalSyncTs = reason === "browser-close" ? Date.now() : null;
+  const preserveSessionId = activeSession?.id || analyticsActiveSession?.id || null;
+  const syncedVisits = pruneRawVisitList(
+    compactVisitList(synchronizeFinalInteraction(visits, activeSession, finalSyncTs)),
+    { preserveSessionId }
+  );
+  const syncedAnalyticsVisits = synchronizeFinalInteraction(
+    analyticsVisits,
+    analyticsActiveSession || activeSession,
+    finalSyncTs
+  );
+
+  if (activeSession) {
+    await recordSessionEndReflection(activeSession, reason, Date.now(), reasonDetail);
+  }
 
   await chrome.storage.local.set({
     visits: syncedVisits,
-    analyticsVisits: syncedAnalyticsVisits,
+    analyticsVisits: pruneRawVisitList(compactVisitList(syncedAnalyticsVisits), { preserveSessionId }),
     activeSession: null,
     analyticsActiveSession: null,
+    pendingSessionEndRecovery:
+      reason === "browser-close"
+        ? (
+            pendingSessionEndRecovery?.session?.id
+              ? pendingSessionEndRecovery
+              : {
+                  session: activeSession || analyticsActiveSession,
+                  reason: "browser-close",
+                  endedAt: Date.now()
+                }
+          )
+        : null,
     pendingManualSession: null,
     pendingAutoResume: null,
     awaitingResumeIntent: false,
@@ -917,7 +1098,7 @@ async function stagePendingAutoResume(tab, source = "activity-resume", ts = Date
     id: pendingAutoResume?.id || `${ts}`,
     url,
     tabId: tab?.id ?? null,
-    favIconUrl: tab?.favIconUrl || "",
+    favIconUrl: sanitizeFaviconUrl(tab?.favIconUrl || ""),
     source,
     detectedAt: ts,
     autoIntentPrompted: pendingAutoResume?.autoIntentPrompted || false
@@ -981,9 +1162,10 @@ async function acceptPendingAutoResumeWithoutGoal() {
     sessionId
   };
 
+  const preserveSessionId = newSession.id;
   await chrome.storage.local.set({
-    visits: [...visits, newVisit],
-    analyticsVisits: [...analyticsVisits, { ...newVisit }],
+    visits: pruneRawVisitList([...visits, newVisit], { preserveSessionId }),
+    analyticsVisits: pruneRawVisitList([...analyticsVisits, { ...newVisit }], { preserveSessionId }),
     activeSession: newSession,
     analyticsActiveSession: {
       ...(analyticsActiveSession || newSession),
@@ -1103,6 +1285,7 @@ async function logVisit(url, source, tabId = null, favIconUrl = "") {
     if (shouldIgnoreExtensionPage(url)) return;
 
     const now = Date.now();
+    const safeFavIconUrl = sanitizeFaviconUrl(favIconUrl);
     const visit = {
       url,
       domain: toDomain(url),
@@ -1110,7 +1293,7 @@ async function logVisit(url, source, tabId = null, favIconUrl = "") {
       lastActiveTime: now,
       source,
       tabId,
-      favIconUrl,
+      favIconUrl: safeFavIconUrl,
       hadInteraction: false
     };
 
@@ -1124,8 +1307,14 @@ async function logVisit(url, source, tabId = null, favIconUrl = "") {
       "analyticsVisits",
       "analyticsActiveSession"
     ]);
-    const visits = data.visits || [];
-    const analyticsVisits = data.analyticsVisits || [];
+    const visits = pruneRawVisitList(
+      compactVisitList(data.visits || []),
+      { preserveSessionId: data.activeSession?.id || data.analyticsActiveSession?.id || null }
+    );
+    const analyticsVisits = pruneRawVisitList(
+      compactVisitList(data.analyticsVisits || []),
+      { preserveSessionId: data.activeSession?.id || data.analyticsActiveSession?.id || null }
+    );
     let active = data.activeSession || null;
     const pendingManualSession = data.pendingManualSession || null;
     const pendingAutoResume = data.pendingAutoResume || null;
@@ -1165,7 +1354,7 @@ async function logVisit(url, source, tabId = null, favIconUrl = "") {
         lastActiveTime: shouldTreatReloadAsPassive
           ? latestVisit.lastActiveTime
           : now,
-        favIconUrl: favIconUrl || latestVisit.favIconUrl || ""
+        favIconUrl: safeFavIconUrl || latestVisit.favIconUrl || ""
       };
 
       const nextAnalyticsVisits = analyticsVisits.slice();
@@ -1177,13 +1366,13 @@ async function logVisit(url, source, tabId = null, favIconUrl = "") {
           lastActiveTime: shouldTreatReloadAsPassive
             ? latestAnalyticsVisit.lastActiveTime
             : now,
-          favIconUrl: favIconUrl || latestAnalyticsVisit.favIconUrl || ""
+          favIconUrl: safeFavIconUrl || latestAnalyticsVisit.favIconUrl || ""
         };
       }
 
       await chrome.storage.local.set({
-        visits: nextVisits,
-        analyticsVisits: nextAnalyticsVisits
+        visits: pruneRawVisitList(nextVisits, { preserveSessionId: active?.id || analyticsActive?.id || null }),
+        analyticsVisits: pruneRawVisitList(nextAnalyticsVisits, { preserveSessionId: active?.id || analyticsActive?.id || null })
       });
       if (!shouldTreatReloadAsPassive) {
         await heartbeatActiveSession(now);
@@ -1200,7 +1389,7 @@ async function logVisit(url, source, tabId = null, favIconUrl = "") {
           id: pendingAutoResume?.id || `${now}`,
           url,
           tabId,
-          favIconUrl,
+          favIconUrl: safeFavIconUrl,
           source,
           detectedAt: now,
           autoIntentPrompted: pendingAutoResume?.autoIntentPrompted || false
@@ -1280,11 +1469,12 @@ async function logVisit(url, source, tabId = null, favIconUrl = "") {
 
     visits.push(visit);
     analyticsVisits.push(analyticsVisit);
+    const preserveSessionId = active?.id || analyticsActive?.id || null;
 
     await chrome.storage.local.set({
-      visits,
+      visits: pruneRawVisitList(visits, { preserveSessionId }),
       activeSession: active,
-      analyticsVisits,
+      analyticsVisits: pruneRawVisitList(analyticsVisits, { preserveSessionId }),
       pendingManualSession: null,
       pendingAutoResume: null,
       awaitingResumeIntent: false,
@@ -1439,7 +1629,7 @@ async function maybeNotifySessionEnded(activeSession) {
   } catch {}
 }
 
-async function recordSessionEndReflection(activeSession, reason = "inactivity", ts = Date.now()) {
+async function recordSessionEndReflection(activeSession, reason = "inactivity", ts = Date.now(), reasonDetail = "") {
   if (!activeSession?.id) return;
 
   const { sessionReflections = [] } = await chrome.storage.local.get(["sessionReflections"]);
@@ -1454,15 +1644,30 @@ async function recordSessionEndReflection(activeSession, reason = "inactivity", 
   if (existing) return;
 
   const nextReflections = Array.isArray(sessionReflections) ? sessionReflections.slice() : [];
+  const action =
+    reason === "inactivity"
+      ? "inactive-end"
+      : reason === "manual"
+        ? "manual-end"
+        : reason === "browser-close"
+          ? "browser-close-end"
+          : "session-ended";
+  const reflectionLabel =
+    reason === "inactivity"
+      ? "Ended due to inactivity"
+      : reason === "manual"
+        ? "Ended manually"
+        : reason === "browser-close"
+          ? "Ended when browser closed or restarted"
+          : "Session ended";
   nextReflections.push({
     sessionId,
+    sessionStartTime: Number(activeSession?.startTime || 0),
     timestamp: ts,
     type: "session-ended",
-    action: reason === "inactivity" ? "inactive-end" : "session-ended",
-    reflection:
-      reason === "inactivity"
-        ? "Ended due to inactivity"
-        : "Session ended",
+    action,
+    reflection: reflectionLabel,
+    reasonDetail: String(reasonDetail || "").trim(),
     lastActivityAt: Math.max(
       Number(activeSession?.lastEventTime || 0),
       Number(activeSession?.startTime || 0)
@@ -1482,20 +1687,73 @@ async function runSessionMonitorTick() {
   const data = await chrome.storage.local.get([
     "activeSession",
     "analyticsActiveSession",
+    "visits",
+    "analyticsVisits",
     "pendingAutoResume",
     "awaitingResumeIntent"
   ]);
   const active = data.activeSession;
   const analyticsActive = data.analyticsActiveSession;
+  const visits = Array.isArray(data.visits) ? data.visits : [];
+  const analyticsVisits = Array.isArray(data.analyticsVisits) ? data.analyticsVisits : [];
   const updates = {};
+
+  const synchronizeFinalInteraction = (list, session, ts) => {
+    if (!Array.isArray(list) || !session?.id) return list;
+
+    const finalInteractionTs = Math.max(
+      Number(session?.lastEventTime || 0),
+      Number(session?.startTime || 0),
+      Number(ts || 0)
+    );
+    if (!finalInteractionTs) return list;
+
+    const next = list.slice();
+    for (let i = next.length - 1; i >= 0; i -= 1) {
+      const visit = next[i];
+      if (String(visit?.sessionId || "") !== String(session.id)) continue;
+
+      next[i] = {
+        ...visit,
+        hadInteraction: true,
+        firstInteractionTime: Math.max(
+          Number(visit?.time || 0),
+          Number(visit?.firstInteractionTime || visit?.time || 0)
+        ),
+        lastActiveTime: Math.max(
+          Number(visit?.lastActiveTime || 0),
+          finalInteractionTs
+        )
+      };
+      return next;
+    }
+
+    return list;
+  };
 
   if (active) {
     if (browserInactive && !videoPlaying) {
-      await recordSessionEndReflection(active, "inactivity", now);
-      await maybeNotifySessionEnded(active);
+      const endReason = idleState === "locked" ? "browser-close" : "inactivity";
+      const finalSyncTs = endReason === "browser-close" ? now : null;
+      updates.visits = synchronizeFinalInteraction(visits, active, finalSyncTs);
+      updates.analyticsVisits = synchronizeFinalInteraction(
+        analyticsVisits,
+        analyticsActive || active,
+        finalSyncTs
+      );
+      await recordSessionEndReflection(active, endReason, now);
+      if (endReason === "inactivity") {
+        await maybeNotifySessionEnded(active);
+      } else {
+        updates.pendingSessionEndRecovery = {
+          session: active,
+          reason: "browser-close",
+          endedAt: now
+        };
+      }
       updates.activeSession = null;
       updates.pendingAutoResume = null;
-      updates.awaitingResumeIntent = true;
+      updates.awaitingResumeIntent = endReason === "inactivity";
       lastOverrunNotificationSessionId = null;
       lastGoalReminderSessionId = null;
       lastEndingSoonNotificationSessionId = null;
@@ -1655,8 +1913,34 @@ chrome.webNavigation.onCommitted.addListener(async (details) => {
 chrome.runtime.onStartup.addListener(async () => {
   try {
     ensureSessionMonitorAlarm();
+    await compactStoredVisitData();
     await loadInactivityThreshold();
     await refreshIdleState();
+    const { activeSession, analyticsActiveSession, pendingSessionEndRecovery } = await chrome.storage.local.get([
+      "activeSession",
+      "analyticsActiveSession",
+      "pendingSessionEndRecovery"
+    ]);
+    if (activeSession || analyticsActiveSession) {
+      const endingSession = activeSession || analyticsActiveSession;
+      await recordSessionEndReflection(endingSession, "browser-close", Date.now());
+      await chrome.storage.local.set({
+        activeSession: null,
+        analyticsActiveSession: null,
+        pendingSessionEndRecovery: null,
+        pendingAutoResume: null,
+        awaitingResumeIntent: false
+      });
+    } else if (pendingSessionEndRecovery?.session?.id) {
+      await recordSessionEndReflection(
+        pendingSessionEndRecovery.session,
+        pendingSessionEndRecovery.reason || "browser-close",
+        Number(pendingSessionEndRecovery.endedAt || Date.now())
+      );
+      await chrome.storage.local.set({
+        pendingSessionEndRecovery: null
+      });
+    }
     await rebuildSessions();
     await rebuildAnalyticsSessions();
   } catch {}
@@ -1665,6 +1949,7 @@ chrome.runtime.onStartup.addListener(async () => {
 chrome.runtime.onInstalled.addListener(async () => {
   try {
     ensureSessionMonitorAlarm();
+    await compactStoredVisitData();
     const {
       visits,
       sessions,
@@ -1724,6 +2009,33 @@ chrome.runtime.onInstalled.addListener(async () => {
     await rebuildSessions();
     await rebuildAnalyticsSessions();
   } catch {}
+});
+
+chrome.windows.onRemoved.addListener(() => {
+  (async () => {
+    try {
+      const windows = await chrome.windows.getAll({ populate: false });
+      const remainingNormalWindows = windows.filter((win) => win?.type === "normal");
+      if (remainingNormalWindows.length > 0) return;
+
+      const { activeSession, analyticsActiveSession } = await chrome.storage.local.get([
+        "activeSession",
+        "analyticsActiveSession"
+      ]);
+      if (!activeSession && !analyticsActiveSession) return;
+
+      const endingSession = activeSession || analyticsActiveSession;
+      await chrome.storage.local.set({
+        pendingSessionEndRecovery: {
+          session: endingSession,
+          reason: "browser-close",
+          endedAt: Date.now()
+        }
+      });
+
+      await stopCurrentSession("browser-close");
+    } catch {}
+  })();
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -1923,14 +2235,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         const now = Date.now();
         const nextReflections = Array.isArray(sessionReflections) ? sessionReflections.slice() : [];
-        nextReflections.push({
-          sessionId: String(activeSession.id),
-          timestamp: now,
-          type: "overrun-decision",
-          action,
-          reflection,
-          extensionMinutes: action === "extend" ? extensionMinutes : 0
-        });
+        if (action !== "end") {
+          nextReflections.push({
+            sessionId: String(activeSession.id),
+            sessionStartTime: Number(activeSession.startTime || 0),
+            timestamp: now,
+            type: "overrun-decision",
+            action,
+            reflection,
+            extensionMinutes: action === "extend" ? extensionMinutes : 0
+          });
+        }
 
         const updates = {
           sessionReflections: nextReflections
@@ -2094,7 +2409,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         if (action === "end") {
           await chrome.storage.local.set(updates);
-          await stopCurrentSession();
+          await stopCurrentSession("manual", reflection);
           sendResponse({ ok: true, action: "end" });
           return;
         }

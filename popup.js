@@ -11,6 +11,9 @@ const startManualSession = sessionHelpers?.startManualSession || null;
 let popupFailed = false;
 let refreshTimerId = null;
 const RISK_SAMPLE_MIN = 3;
+let popupRiskSessionsCache = [];
+let popupRiskSessionsLoadedAt = 0;
+let popupRiskLoadPromise = null;
 
 async function safeRuntimeMessage(message) {
   try {
@@ -314,6 +317,43 @@ function renderPopupRisk(activeSession, sessions) {
   card.hidden = false;
 }
 
+async function loadPopupRiskSessions(force = false) {
+  const now = Date.now();
+  if (!force && popupRiskSessionsCache.length && now - popupRiskSessionsLoadedAt < 15000) {
+    return popupRiskSessionsCache;
+  }
+  if (popupRiskLoadPromise) return popupRiskLoadPromise;
+
+  popupRiskLoadPromise = chrome.storage.local
+    .get(["sessions"])
+    .then(({ sessions = [] }) => {
+      popupRiskSessionsCache = Array.isArray(sessions) ? sessions : [];
+      popupRiskSessionsLoadedAt = Date.now();
+      return popupRiskSessionsCache;
+    })
+    .finally(() => {
+      popupRiskLoadPromise = null;
+    });
+
+  return popupRiskLoadPromise;
+}
+
+async function refreshPopupRisk(activeSession, force = false) {
+  if (popupFailed) return;
+  if (!activeSession || activeSession?.intendedMinutes == null) {
+    renderPopupRisk(null, []);
+    return;
+  }
+
+  try {
+    const sessions = await loadPopupRiskSessions(force);
+    renderPopupRisk(activeSession, sessions);
+  } catch (error) {
+    console.error("Popup risk load failed", error);
+    renderPopupRisk(activeSession, []);
+  }
+}
+
 function buildProgressSvg(valueLabel, goalLabel, ratio, hasGoal = true) {
   const size = 148;
   const cx = size / 2;
@@ -387,7 +427,6 @@ async function submitIntent(minutes) {
   }
 
   hideChooser();
-  await refresh();
   window.close();
 }
 
@@ -404,7 +443,7 @@ async function stopSession() {
 async function refresh() {
   if (popupFailed) return;
   await loadInactivityThreshold();
-  const { activeSession, sessions = [] } = await chrome.storage.local.get(["activeSession", "sessions"]);
+  const { activeSession } = await chrome.storage.local.get(["activeSession"]);
   const progressChart = document.getElementById("popupProgressChart");
 
   if (!activeSession) {
@@ -422,13 +461,13 @@ async function refresh() {
   const goalMinutes = activeSession.intendedMinutes;
   const ringBasisMinutes = goalMinutes || 30;
   const ratio = elapsedMs / (ringBasisMinutes * 60 * 1000);
-  progressChart.innerHTML = buildProgressSvg(
-    fmtElapsed(elapsedMs),
-    goalMinutes ? `${goalMinutes}m` : "free",
-    ratio,
-    goalMinutes != null
-  );
-  renderPopupRisk(activeSession, Array.isArray(sessions) ? sessions : []);
+    progressChart.innerHTML = buildProgressSvg(
+      fmtElapsed(elapsedMs),
+      goalMinutes ? `${goalMinutes}m` : "free",
+      ratio,
+      goalMinutes != null
+    );
+  void refreshPopupRisk(activeSession);
 
   if (activeSession.intendedMinutes != null && chooserMode !== "manual") {
     hideChooser();
@@ -494,14 +533,17 @@ async function initPopup() {
   }
 
   bindPopupEvents();
-  await safeRefresh();
-
   if (launchMode === "manual" || launchMode === "auto") {
     showChooser(launchMode);
   }
+  await safeRefresh();
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
+    if (changes.sessions) {
+      popupRiskSessionsCache = [];
+      popupRiskSessionsLoadedAt = 0;
+    }
     if (changes.activeSession || changes.inactivityThresholdMinutes) {
       safeRefresh();
     }

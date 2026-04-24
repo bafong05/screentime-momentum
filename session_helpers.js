@@ -1,4 +1,7 @@
 (function () {
+  const RAW_VISIT_RETENTION_DAYS = 14;
+  const MAX_STORED_RAW_VISITS = 5000;
+
   function safeBackgroundSignal(message) {
     try {
       chrome.runtime.sendMessage(message, () => {
@@ -32,6 +35,34 @@
     } catch {
       return "unknown";
     }
+  }
+
+  function pruneRawVisitList(list, preserveSessionId = null) {
+    if (!Array.isArray(list) || !list.length) return [];
+
+    const cutoff = Date.now() - RAW_VISIT_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    const preserveId = preserveSessionId == null ? null : String(preserveSessionId);
+    const filtered = list.filter((visit) => {
+      if (!visit) return false;
+      if (preserveId && String(visit.sessionId || "") === preserveId) return true;
+      return Number(visit.time || 0) >= cutoff;
+    });
+
+    if (filtered.length <= MAX_STORED_RAW_VISITS) return filtered;
+
+    const preserved = [];
+    const remaining = [];
+    for (const visit of filtered) {
+      if (preserveId && String(visit?.sessionId || "") === preserveId) {
+        preserved.push(visit);
+      } else {
+        remaining.push(visit);
+      }
+    }
+
+    const allowance = Math.max(0, MAX_STORED_RAW_VISITS - preserved.length);
+    const tail = allowance > 0 ? remaining.slice(-allowance) : [];
+    return [...tail, ...preserved].sort((a, b) => Number(a?.time || 0) - Number(b?.time || 0));
   }
 
   async function saveIntentToActiveSession(minutes, sessionName = "") {
@@ -93,8 +124,8 @@
       const filteredAnalytics = analyticsIntents.filter((intent) => intent.sessionId !== sessionId);
 
       await chrome.storage.local.set({
-        visits: [...visits, newVisit],
-        analyticsVisits: [...analyticsVisits, { ...newVisit }],
+        visits: pruneRawVisitList([...visits, newVisit], sessionId),
+        analyticsVisits: pruneRawVisitList([...analyticsVisits, { ...newVisit }], sessionId),
         activeSession: newSession,
         analyticsActiveSession: { ...newSession },
         pendingAutoResume: null,

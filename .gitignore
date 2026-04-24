@@ -3,3 +3,5 @@
 __pycache__/
 *.pyc
 screen-time-momentum.zip
+*.mov
+*.mp4

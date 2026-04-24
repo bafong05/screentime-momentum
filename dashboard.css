@@ -1077,6 +1077,44 @@ body {
   white-space: nowrap;
 }
 
+.sessionEventRow {
+  padding: 6px 0;
+}
+
+.sessionEventMain {
+  align-items: flex-start;
+}
+
+.sessionEventDot {
+  width: 10px;
+  height: 10px;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #9d5cff 0%, #7d34d8 100%);
+  box-shadow: 0 0 0 4px rgba(125, 52, 216, 0.1);
+  flex: 0 0 auto;
+}
+
+.sessionEventContent {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sessionEventTitle {
+  color: var(--purple);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.sessionEventMeta {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .sessionReflectionNote {
   margin-bottom: 10px;
   padding: 9px 11px;
