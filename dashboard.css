@@ -56,14 +56,12 @@ body {
 }
 
 .sidebarMark {
-  width: 34px;
-  height: 34px;
-  border-radius: 12px;
-  display: grid;
-  place-items: center;
-  background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);
-  color: white;
-  font-weight: 800;
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  display: block;
+  object-fit: contain;
+  flex: 0 0 auto;
 }
 
 .sidebarTitle {
