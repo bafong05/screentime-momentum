@@ -18,7 +18,12 @@ Either:
 1. Open `chrome://extensions`
 2. Turn on `Developer mode`
 3. Click `Load unpacked`
-4. Select the project folder
+4. Select the project folder:
 
 After that, the extension should appear in Chrome and can be pinned from the extensions menu.
 
+## Known Development Notes
+
+- This project is still being refined, so some session-tracking edge cases may still exist.
+- If Chrome shows an extension error after loading, try reloading the unpacked extension once in `chrome://extensions`.
+- If the AI assistant seems unavailable, reload the extension once and try again.

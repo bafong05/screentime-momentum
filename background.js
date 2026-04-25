@@ -78,14 +78,13 @@ const SESSION_ENDING_SOON_ALARM = "session-ending-soon";
 const NO_GOAL_REMINDER_DELAY_MS = 10 * 1000;
 const DEFAULT_NO_GOAL_HOURLY_INTERVAL_HOURS = 1;
 const NO_GOAL_INTERVAL_OPTIONS_HOURS = [0.25, 0.5, 1, 2];
-const DEPLOYED_AI_ASSISTANT_BACKEND_URL = "";
-const LOCAL_AI_ASSISTANT_BACKEND_URL = "http://127.0.0.1:8000/analytics/ai";
+const DEPLOYED_AI_ASSISTANT_BACKEND_URL = "https://screen-time-momentum-ai.onrender.com/analytics/ai";
 const REPEAT_VISIT_COLLAPSE_WINDOW_MS = 45 * 1000;
 const RAW_VISIT_RETENTION_DAYS = 14;
 const MAX_STORED_RAW_VISITS = 5000;
 
 function getAiAssistantBackendBaseUrl() {
-  const backendUrl = DEPLOYED_AI_ASSISTANT_BACKEND_URL || LOCAL_AI_ASSISTANT_BACKEND_URL;
+  const backendUrl = DEPLOYED_AI_ASSISTANT_BACKEND_URL;
   return backendUrl.replace(/\/analytics\/ai$/, "");
 }
 
