@@ -1,4 +1,5 @@
 const DEFAULT_INACTIVITY_THRESHOLD_MINUTES = 10;
+const DEFAULT_LOCK_SLEEP_GRACE_MINUTES = 5;
 const LEGITIMATE_TAB_DWELL_MS = 3000;
 const DEFAULT_NO_GOAL_HOURLY_INTERVAL_HOURS = 1;
 const NO_GOAL_INTERVAL_OPTIONS_HOURS = [0.25, 0.5, 1, 2];
@@ -36,6 +37,7 @@ let dashboardState = {
   visits: [],
   sessionReflections: [],
   inactivityThresholdMinutes: DEFAULT_INACTIVITY_THRESHOLD_MINUTES,
+  lockSleepGraceMinutes: DEFAULT_LOCK_SLEEP_GRACE_MINUTES,
   noGoalHourlyIntervalHours: DEFAULT_NO_GOAL_HOURLY_INTERVAL_HOURS,
   notificationPreferences: null,
   assistantMessages: ASSISTANT_DEFAULT_MESSAGES.slice(),
@@ -3072,6 +3074,8 @@ function renderSettings(minutes, statusText = "") {
   const normalized = syncInactivityThreshold(minutes);
   const input = document.getElementById("thresholdInput");
   const status = document.getElementById("thresholdStatus");
+  const lockSleepGraceInput = document.getElementById("lockSleepGraceInput");
+  const lockSleepGraceStatus = document.getElementById("lockSleepGraceStatus");
   const endingSoon = document.getElementById("notifyEndingSoon");
   const overrun = document.getElementById("notifyOverrun");
   const missingGoal = document.getElementById("notifyMissingGoal");
@@ -3080,6 +3084,18 @@ function renderSettings(minutes, statusText = "") {
   const noGoalHourlyInterval = document.getElementById("noGoalHourlyInterval");
   if (input) input.value = String(normalized);
   if (status) status.textContent = statusText || `Current timeout: ${normalized} minutes.`;
+  if (lockSleepGraceInput) {
+    lockSleepGraceInput.value = String(
+      normalizeLockSleepGraceMinutes(dashboardState.lockSleepGraceMinutes)
+    );
+  }
+  if (lockSleepGraceStatus) {
+    const minutes = normalizeLockSleepGraceMinutes(dashboardState.lockSleepGraceMinutes);
+    lockSleepGraceStatus.textContent =
+      minutes === 0
+        ? "Current lock/sleep grace: end sessions immediately when the computer locks or sleeps."
+        : `Current lock/sleep grace: ${minutes} minute${minutes === 1 ? "" : "s"}.`;
+  }
   if (endingSoon) endingSoon.checked = dashboardState.notificationPreferences?.endingSoon !== false;
   if (overrun) overrun.checked = dashboardState.notificationPreferences?.overrun !== false;
   if (missingGoal) missingGoal.checked = dashboardState.notificationPreferences?.missingGoal !== false;
@@ -3228,6 +3244,7 @@ function renderDashboard(data) {
     visits: data.visits || [],
     sessionReflections: data.sessionReflections || [],
     inactivityThresholdMinutes: thresholdMinutes,
+    lockSleepGraceMinutes: normalizeLockSleepGraceMinutes(data.lockSleepGraceMinutes),
     noGoalHourlyIntervalHours: normalizeNoGoalHourlyIntervalHours(data.noGoalHourlyIntervalHours),
     notificationPreferences: data.notificationPreferences || {
       endingSoon: true,
@@ -3288,6 +3305,7 @@ async function refresh() {
     "visits",
     "sessionReflections",
     "inactivityThresholdMinutes",
+    "lockSleepGraceMinutes",
     "noGoalHourlyIntervalHours",
     "notificationPreferences"
   ]);
@@ -3308,6 +3326,7 @@ async function refresh() {
         "visits",
         "sessionReflections",
         "inactivityThresholdMinutes",
+        "lockSleepGraceMinutes",
         "noGoalHourlyIntervalHours"
       ]);
       renderDashboard(rebuilt);
@@ -3364,6 +3383,12 @@ async function openIntentChooser(mode) {
 
 function closeIntentModal() {
   document.getElementById("intentModal").hidden = true;
+}
+
+function normalizeLockSleepGraceMinutes(value) {
+  const minutes = Number(value);
+  if (!Number.isFinite(minutes)) return DEFAULT_LOCK_SLEEP_GRACE_MINUTES;
+  return Math.min(60, Math.max(0, Math.round(minutes)));
 }
 
 async function submitManualIntent(minutes) {
@@ -3502,6 +3527,22 @@ document.querySelectorAll(".thresholdPresetBtn").forEach((button) => {
     renderSettings(minutes, `Saved. Sessions now expire after ${minutes} minutes of inactivity.`);
     await refresh();
   });
+});
+
+document.getElementById("saveLockSleepGraceBtn").addEventListener("click", async () => {
+  const input = document.getElementById("lockSleepGraceInput");
+  const minutes = normalizeLockSleepGraceMinutes(input.value);
+  await chrome.storage.local.set({ lockSleepGraceMinutes: minutes });
+  dashboardState.lockSleepGraceMinutes = minutes;
+  renderSettings(
+    dashboardState.inactivityThresholdMinutes,
+    document.getElementById("thresholdStatus")?.textContent || ""
+  );
+});
+
+document.getElementById("lockSleepGraceInput").addEventListener("keydown", async (event) => {
+  if (event.key !== "Enter") return;
+  document.getElementById("saveLockSleepGraceBtn").click();
 });
 
 ["notifyEndingSoon", "notifyOverrun", "notifyMissingGoal", "notifyNoGoalHourly", "notifySessionEnded"].forEach((id) => {
@@ -3660,6 +3701,15 @@ chrome.storage.onChanged.addListener((changes, area) => {
     const minutes = syncInactivityThreshold(changes.inactivityThresholdMinutes.newValue);
     renderSettings(minutes, `Current timeout: ${minutes} minutes.`);
   }
+  if (changes.lockSleepGraceMinutes) {
+    dashboardState.lockSleepGraceMinutes = normalizeLockSleepGraceMinutes(
+      changes.lockSleepGraceMinutes.newValue
+    );
+    renderSettings(
+      dashboardState.inactivityThresholdMinutes,
+      document.getElementById("thresholdStatus")?.textContent || ""
+    );
+  }
   if (changes.notificationPreferences) {
     dashboardState.notificationPreferences = changes.notificationPreferences.newValue || {
       endingSoon: true,
@@ -3676,7 +3726,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     renderSettings(dashboardState.inactivityThresholdMinutes, document.getElementById("thresholdStatus")?.textContent || "");
   }
 
-  if (changes.sessions || changes.analyticsSessions || changes.activeSession || changes.visits || changes.inactivityThresholdMinutes || changes.notificationPreferences || changes.noGoalHourlyIntervalHours) {
+  if (changes.sessions || changes.analyticsSessions || changes.activeSession || changes.visits || changes.inactivityThresholdMinutes || changes.lockSleepGraceMinutes || changes.notificationPreferences || changes.noGoalHourlyIntervalHours) {
     renderDashboard(dashboardState);
   }
 });

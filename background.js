@@ -1,5 +1,7 @@
 const DEFAULT_INACTIVITY_THRESHOLD_MINUTES = 10;
+const DEFAULT_LOCK_SLEEP_GRACE_MINUTES = 5;
 let inactivityThresholdMs = DEFAULT_INACTIVITY_THRESHOLD_MINUTES * 60 * 1000;
+let lockSleepGraceMs = DEFAULT_LOCK_SLEEP_GRACE_MINUTES * 60 * 1000;
 let browserIdleState = "active";
 let chromeAppFocused = true;
 
@@ -26,6 +28,12 @@ function normalizeInactivityThresholdMinutes(value) {
   return Math.min(120, Math.max(1, Math.round(minutes)));
 }
 
+function normalizeLockSleepGraceMinutes(value) {
+  const minutes = Number(value);
+  if (!Number.isFinite(minutes)) return DEFAULT_LOCK_SLEEP_GRACE_MINUTES;
+  return Math.min(60, Math.max(0, Math.round(minutes)));
+}
+
 function normalizeSessionName(value) {
   const name = String(value || "").trim().replace(/\s+/g, " ");
   return name.slice(0, 80);
@@ -33,6 +41,10 @@ function normalizeSessionName(value) {
 
 function getInactivityThresholdMs() {
   return inactivityThresholdMs;
+}
+
+function getLockSleepGraceMs() {
+  return lockSleepGraceMs;
 }
 
 function getIdleDetectionSeconds() {
@@ -44,6 +56,13 @@ async function loadInactivityThreshold() {
   const minutes = normalizeInactivityThresholdMinutes(inactivityThresholdMinutes);
   inactivityThresholdMs = minutes * 60 * 1000;
   return inactivityThresholdMs;
+}
+
+async function loadLockSleepGraceMinutes() {
+  const { lockSleepGraceMinutes } = await chrome.storage.local.get(["lockSleepGraceMinutes"]);
+  const minutes = normalizeLockSleepGraceMinutes(lockSleepGraceMinutes);
+  lockSleepGraceMs = minutes * 60 * 1000;
+  return lockSleepGraceMs;
 }
 
 async function getNotificationPreferences() {
@@ -120,6 +139,39 @@ function formatNoGoalIntervalLabel(hours) {
     return minutes === 1 ? "1 minute" : `${minutes} minutes`;
   }
   return hours === 1 ? "1 hour" : `${hours} hours`;
+}
+
+function synchronizeFinalInteractionForSession(list, session, ts = null) {
+  if (!Array.isArray(list) || !session?.id) return list;
+
+  const finalInteractionTs = Math.max(
+    Number(session?.lastEventTime || 0),
+    Number(session?.startTime || 0),
+    Number(ts || 0)
+  );
+  if (!finalInteractionTs) return list;
+
+  const next = list.slice();
+  for (let i = next.length - 1; i >= 0; i -= 1) {
+    const visit = next[i];
+    if (String(visit?.sessionId || "") !== String(session.id)) continue;
+
+    next[i] = {
+      ...visit,
+      hadInteraction: true,
+      firstInteractionTime: Math.max(
+        Number(visit?.time || 0),
+        Number(visit?.firstInteractionTime || visit?.time || 0)
+      ),
+      lastActiveTime: Math.max(
+        Number(visit?.lastActiveTime || 0),
+        finalInteractionTs
+      )
+    };
+    return next;
+  }
+
+  return list;
 }
 
 function queryIdleState(seconds = getIdleDetectionSeconds()) {
@@ -899,47 +951,13 @@ async function stopCurrentSession(reason = "manual", reasonDetail = "") {
     return { ok: true, stopped: false };
   }
 
-  const synchronizeFinalInteraction = (list, session, ts = null) => {
-    if (!Array.isArray(list) || !session?.id) return list;
-
-    const finalInteractionTs = Math.max(
-      Number(session?.lastEventTime || 0),
-      Number(session?.startTime || 0),
-      Number(ts || 0)
-    );
-    if (!finalInteractionTs) return list;
-
-    const next = list.slice();
-    for (let i = next.length - 1; i >= 0; i -= 1) {
-      const visit = next[i];
-      if (String(visit?.sessionId || "") !== String(session.id)) continue;
-
-      const nextVisit = {
-        ...visit,
-        hadInteraction: true,
-        firstInteractionTime: Math.max(
-          Number(visit?.time || 0),
-          Number(visit?.firstInteractionTime || visit?.time || 0)
-        ),
-        lastActiveTime: Math.max(
-          Number(visit?.lastActiveTime || 0),
-          finalInteractionTs
-        )
-      };
-      next[i] = nextVisit;
-      return next;
-    }
-
-    return list;
-  };
-
   const finalSyncTs = reason === "browser-close" ? Date.now() : null;
   const preserveSessionId = activeSession?.id || analyticsActiveSession?.id || null;
   const syncedVisits = pruneRawVisitList(
-    compactVisitList(synchronizeFinalInteraction(visits, activeSession, finalSyncTs)),
+    compactVisitList(synchronizeFinalInteractionForSession(visits, activeSession, finalSyncTs)),
     { preserveSessionId }
   );
-  const syncedAnalyticsVisits = synchronizeFinalInteraction(
+  const syncedAnalyticsVisits = synchronizeFinalInteractionForSession(
     analyticsVisits,
     analyticsActiveSession || activeSession,
     finalSyncTs
@@ -980,6 +998,106 @@ async function stopCurrentSession(reason = "manual", reasonDetail = "") {
   await rebuildSessions();
   await rebuildAnalyticsSessions();
   return { ok: true, stopped: true };
+}
+
+async function finalizeLockedSessionAfterGrace(lockStartedAt, reason = "browser-close") {
+  const {
+    activeSession,
+    analyticsActiveSession,
+    visits = [],
+    analyticsVisits = [],
+    pendingSessionEndRecovery = null
+  } = await chrome.storage.local.get([
+    "activeSession",
+    "analyticsActiveSession",
+    "visits",
+    "analyticsVisits",
+    "pendingSessionEndRecovery"
+  ]);
+
+  if (!activeSession && !analyticsActiveSession) {
+    await chrome.storage.local.set({ pendingLockedSessionEnd: null });
+    return { ok: true, stopped: false };
+  }
+
+  const endingSession = activeSession || analyticsActiveSession;
+  const finalTs = Number(lockStartedAt || Date.now()) || Date.now();
+  const preserveSessionId = activeSession?.id || analyticsActiveSession?.id || null;
+  const syncedVisits = pruneRawVisitList(
+    compactVisitList(synchronizeFinalInteractionForSession(visits, activeSession, finalTs)),
+    { preserveSessionId }
+  );
+  const syncedAnalyticsVisits = pruneRawVisitList(
+    compactVisitList(synchronizeFinalInteractionForSession(analyticsVisits, analyticsActiveSession || activeSession, finalTs)),
+    { preserveSessionId }
+  );
+
+  await recordSessionEndReflection(endingSession, reason, finalTs);
+  await chrome.storage.local.set({
+    visits: syncedVisits,
+    analyticsVisits: syncedAnalyticsVisits,
+    activeSession: null,
+    analyticsActiveSession: null,
+    pendingLockedSessionEnd: null,
+    pendingSessionEndRecovery:
+      pendingSessionEndRecovery?.session?.id
+        ? pendingSessionEndRecovery
+        : {
+            session: endingSession,
+            reason: "browser-close",
+            endedAt: finalTs
+          },
+    pendingManualSession: null,
+    pendingAutoResume: null,
+    awaitingResumeIntent: false,
+    lastUserActivityAt: finalTs
+  });
+
+  lastOverrunNotificationSessionId = null;
+  lastGoalReminderSessionId = null;
+  lastEndingSoonNotificationSessionId = null;
+  lastSessionEndedNotificationSessionId = null;
+
+  await rebuildSessions();
+  await rebuildAnalyticsSessions();
+  return { ok: true, stopped: true };
+}
+
+async function reconcilePendingLockedSessionEndOnResume(now = Date.now()) {
+  const {
+    pendingLockedSessionEnd,
+    activeSession,
+    analyticsActiveSession
+  } = await chrome.storage.local.get([
+    "pendingLockedSessionEnd",
+    "activeSession",
+    "analyticsActiveSession"
+  ]);
+
+  if (!pendingLockedSessionEnd?.sessionId) return false;
+
+  const elapsedMs = Math.max(0, now - Number(pendingLockedSessionEnd.lockStartedAt || 0));
+  const currentSessionId = String(activeSession?.id || analyticsActiveSession?.id || "");
+  const pendingSessionId = String(pendingLockedSessionEnd.sessionId || "");
+
+  if (!currentSessionId || currentSessionId !== pendingSessionId) {
+    await chrome.storage.local.set({ pendingLockedSessionEnd: null });
+    return false;
+  }
+
+  if (elapsedMs < getLockSleepGraceMs()) {
+    await chrome.storage.local.set({
+      pendingLockedSessionEnd: null,
+      lastUserActivityAt: now
+    });
+    return false;
+  }
+
+  await finalizeLockedSessionAfterGrace(
+    Number(pendingLockedSessionEnd.lockStartedAt || now),
+    String(pendingLockedSessionEnd.reason || "browser-close")
+  );
+  return true;
 }
 
 async function promptForAutoSessionIntent(sessionId) {
@@ -1689,7 +1807,8 @@ async function runSessionMonitorTick() {
     "visits",
     "analyticsVisits",
     "pendingAutoResume",
-    "awaitingResumeIntent"
+    "awaitingResumeIntent",
+    "pendingLockedSessionEnd"
   ]);
   const active = data.activeSession;
   const analyticsActive = data.analyticsActiveSession;
@@ -1697,66 +1816,48 @@ async function runSessionMonitorTick() {
   const analyticsVisits = Array.isArray(data.analyticsVisits) ? data.analyticsVisits : [];
   const updates = {};
 
-  const synchronizeFinalInteraction = (list, session, ts) => {
-    if (!Array.isArray(list) || !session?.id) return list;
-
-    const finalInteractionTs = Math.max(
-      Number(session?.lastEventTime || 0),
-      Number(session?.startTime || 0),
-      Number(ts || 0)
-    );
-    if (!finalInteractionTs) return list;
-
-    const next = list.slice();
-    for (let i = next.length - 1; i >= 0; i -= 1) {
-      const visit = next[i];
-      if (String(visit?.sessionId || "") !== String(session.id)) continue;
-
-      next[i] = {
-        ...visit,
-        hadInteraction: true,
-        firstInteractionTime: Math.max(
-          Number(visit?.time || 0),
-          Number(visit?.firstInteractionTime || visit?.time || 0)
-        ),
-        lastActiveTime: Math.max(
-          Number(visit?.lastActiveTime || 0),
-          finalInteractionTs
-        )
-      };
-      return next;
-    }
-
-    return list;
-  };
-
   if (active) {
     if (browserInactive && !videoPlaying) {
-      const endReason = idleState === "locked" ? "browser-close" : "inactivity";
-      const finalSyncTs = endReason === "browser-close" ? now : null;
-      updates.visits = synchronizeFinalInteraction(visits, active, finalSyncTs);
-      updates.analyticsVisits = synchronizeFinalInteraction(
-        analyticsVisits,
-        analyticsActive || active,
-        finalSyncTs
-      );
-      await recordSessionEndReflection(active, endReason, now);
-      if (endReason === "inactivity") {
-        await maybeNotifySessionEnded(active);
+      if (idleState === "locked") {
+        const pendingLocked = data.pendingLockedSessionEnd;
+        const lockStartedAt =
+          String(pendingLocked?.sessionId || "") === String(active.id)
+            ? Number(pendingLocked.lockStartedAt || now)
+            : now;
+
+        if (!pendingLocked?.sessionId || String(pendingLocked?.sessionId || "") !== String(active.id)) {
+          updates.pendingLockedSessionEnd = {
+            sessionId: String(active.id),
+            lockStartedAt,
+            reason: "browser-close"
+          };
+        }
+
+        if (now - lockStartedAt >= getLockSleepGraceMs()) {
+          await finalizeLockedSessionAfterGrace(lockStartedAt, "browser-close");
+          return;
+        }
       } else {
-        updates.pendingSessionEndRecovery = {
-          session: active,
-          reason: "browser-close",
-          endedAt: now
-        };
+        updates.visits = synchronizeFinalInteractionForSession(visits, active, null);
+        updates.analyticsVisits = synchronizeFinalInteractionForSession(
+          analyticsVisits,
+          analyticsActive || active,
+          null
+        );
+        updates.pendingLockedSessionEnd = null;
+        await recordSessionEndReflection(active, "inactivity", now);
+        await maybeNotifySessionEnded(active);
+        updates.activeSession = null;
+        updates.pendingAutoResume = null;
+        updates.awaitingResumeIntent = true;
+        lastOverrunNotificationSessionId = null;
+        lastGoalReminderSessionId = null;
+        lastEndingSoonNotificationSessionId = null;
       }
-      updates.activeSession = null;
-      updates.pendingAutoResume = null;
-      updates.awaitingResumeIntent = endReason === "inactivity";
-      lastOverrunNotificationSessionId = null;
-      lastGoalReminderSessionId = null;
-      lastEndingSoonNotificationSessionId = null;
     } else {
+      if (data.pendingLockedSessionEnd?.sessionId) {
+        updates.pendingLockedSessionEnd = null;
+      }
       await maybeNotifySessionEndingSoon(active);
       await maybeNotifySessionOverrun(active);
       await maybeNotifyMissingGoal(active);
@@ -1766,7 +1867,11 @@ async function runSessionMonitorTick() {
 
   if (analyticsActive) {
     if (browserInactive && !videoPlaying) {
-      updates.analyticsActiveSession = null;
+      if (idleState !== "locked") {
+        updates.analyticsActiveSession = null;
+      }
+    } else if (data.pendingLockedSessionEnd?.sessionId) {
+      updates.pendingLockedSessionEnd = null;
     }
   }
 
@@ -1914,18 +2019,33 @@ chrome.runtime.onStartup.addListener(async () => {
     ensureSessionMonitorAlarm();
     await compactStoredVisitData();
     await loadInactivityThreshold();
-    await refreshIdleState();
-    const { activeSession, analyticsActiveSession, pendingSessionEndRecovery } = await chrome.storage.local.get([
+    const idleState = await refreshIdleState();
+    const { activeSession, analyticsActiveSession, pendingSessionEndRecovery, pendingLockedSessionEnd } = await chrome.storage.local.get([
       "activeSession",
       "analyticsActiveSession",
-      "pendingSessionEndRecovery"
+      "pendingSessionEndRecovery",
+      "pendingLockedSessionEnd"
     ]);
-    if (activeSession || analyticsActiveSession) {
+    if ((activeSession || analyticsActiveSession) && pendingLockedSessionEnd?.sessionId) {
+      const elapsedMs = Math.max(0, Date.now() - Number(pendingLockedSessionEnd.lockStartedAt || 0));
+      if (idleState === "active" && elapsedMs < getLockSleepGraceMs()) {
+        await chrome.storage.local.set({
+          pendingLockedSessionEnd: null,
+          lastUserActivityAt: Date.now()
+        });
+      } else {
+        await finalizeLockedSessionAfterGrace(
+          Number(pendingLockedSessionEnd.lockStartedAt || Date.now()),
+          String(pendingLockedSessionEnd.reason || "browser-close")
+        );
+      }
+    } else if (activeSession || analyticsActiveSession) {
       const endingSession = activeSession || analyticsActiveSession;
       await recordSessionEndReflection(endingSession, "browser-close", Date.now());
       await chrome.storage.local.set({
         activeSession: null,
         analyticsActiveSession: null,
+        pendingLockedSessionEnd: null,
         pendingSessionEndRecovery: null,
         pendingAutoResume: null,
         awaitingResumeIntent: false
@@ -1956,6 +2076,7 @@ chrome.runtime.onInstalled.addListener(async () => {
       sessionIntents,
       lastUserActivityAt,
       inactivityThresholdMinutes,
+      lockSleepGraceMinutes,
       analyticsVisits,
       analyticsSessions,
       analyticsActiveSession,
@@ -1971,6 +2092,7 @@ chrome.runtime.onInstalled.addListener(async () => {
         "sessionIntents",
         "lastUserActivityAt",
         "inactivityThresholdMinutes",
+        "lockSleepGraceMinutes",
         "analyticsVisits",
         "analyticsSessions",
         "analyticsActiveSession",
@@ -1997,13 +2119,21 @@ chrome.runtime.onInstalled.addListener(async () => {
     if (pendingAutoResume == null) {
       await chrome.storage.local.set({ pendingAutoResume: null });
     }
+    const { pendingLockedSessionEnd } = await chrome.storage.local.get(["pendingLockedSessionEnd"]);
+    if (pendingLockedSessionEnd == null) {
+      await chrome.storage.local.set({ pendingLockedSessionEnd: null });
+    }
     if (awaitingResumeIntent == null) {
       await chrome.storage.local.set({ awaitingResumeIntent: false });
     }
     if (inactivityThresholdMinutes == null) {
       await chrome.storage.local.set({ inactivityThresholdMinutes: DEFAULT_INACTIVITY_THRESHOLD_MINUTES });
     }
+    if (lockSleepGraceMinutes == null) {
+      await chrome.storage.local.set({ lockSleepGraceMinutes: DEFAULT_LOCK_SLEEP_GRACE_MINUTES });
+    }
     await loadInactivityThreshold();
+    await loadLockSleepGraceMinutes();
     await refreshIdleState();
     await rebuildSessions();
     await rebuildAnalyticsSessions();
@@ -2066,7 +2196,11 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
   chromeAppFocused = windowId !== chrome.windows.WINDOW_ID_NONE;
 
   if (chromeAppFocused) {
-    ensureAutoIntentPromptForActiveSession()
+    reconcilePendingLockedSessionEndOnResume(Date.now())
+      .then((endedDuringGraceGap) => {
+        if (endedDuringGraceGap) return false;
+        return ensureAutoIntentPromptForActiveSession();
+      })
       .then((promptedExisting) => {
         if (!promptedExisting) {
           return resumeFromActiveTab("chrome-focus-resume");
@@ -2084,6 +2218,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     browserIdleState = "active";
     (async () => {
       try {
+        const endedDuringGraceGap = await reconcilePendingLockedSessionEndOnResume(ts);
+        if (endedDuringGraceGap) {
+          sendResponse?.({ ok: true, endedDuringGraceGap: true });
+          return;
+        }
         const isForeground = await isForegroundTab(sender?.tab?.id);
         if (!isForeground) {
           sendResponse?.({ ok: true, ignored: true });
@@ -2106,6 +2245,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "videoStatus") {
     (async () => {
       try {
+        const ts = Number(msg.ts) || Date.now();
+        const endedDuringGraceGap = await reconcilePendingLockedSessionEndOnResume(ts);
+        if (endedDuringGraceGap) {
+          sendResponse?.({ ok: true, endedDuringGraceGap: true });
+          return;
+        }
         const isForeground = await isForegroundTab(sender?.tab?.id);
         if (!isForeground) {
           sendResponse?.({ ok: true, ignored: true });
@@ -2114,7 +2259,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         videoPlaying = msg.playing;
         if (msg.playing) {
           browserIdleState = "active";
-          const ts = Number(msg.ts) || Date.now();
           await setLastUserActivity(ts);
           await heartbeatActiveSession(ts);
           await markVisitInteraction(sender?.tab?.id, sender?.tab?.url, ts);
@@ -2552,6 +2696,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
     rebuildAnalyticsSessions().catch(() => {});
   }
 
+  if (changes.lockSleepGraceMinutes) {
+    const minutes = normalizeLockSleepGraceMinutes(changes.lockSleepGraceMinutes.newValue);
+    lockSleepGraceMs = minutes * 60 * 1000;
+  }
+
   if (changes.activeSession) {
     scheduleActiveSessionAlarms(changes.activeSession.newValue || null);
   }
@@ -2567,12 +2716,15 @@ chrome.windows.getLastFocused().then((window) => {
   chromeAppFocused = true;
 });
 loadInactivityThreshold().catch(() => {});
+loadLockSleepGraceMinutes().catch(() => {});
 refreshIdleState().catch(() => {});
 
 chrome.idle.onStateChanged.addListener((state) => {
   browserIdleState = state || "active";
   if (state === "active") {
     (async () => {
+      const endedDuringGraceGap = await reconcilePendingLockedSessionEndOnResume(Date.now());
+      if (endedDuringGraceGap) return;
       await setLastUserActivity(Date.now());
     })().catch(() => {});
     return;

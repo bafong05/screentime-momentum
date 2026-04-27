@@ -354,6 +354,30 @@
                 <section class="settingsSection">
                   <button type="button" class="panelHeader analyticsToggle settingsToggle" data-analytics-toggle aria-expanded="false">
                     <div>
+                      <div class="settingsLabel">Lock/sleep grace period</div>
+                      <p class="settingsHelp">
+                        Control how long a session stays alive after the computer locks or sleeps.
+                      </p>
+                    </div>
+                    <span class="analyticsChevron">+</span>
+                  </button>
+                  <div class="analyticsSectionBody settingsSectionBody" hidden>
+                    <div class="settingsBlock">
+                      <p class="settingsHelp">
+                        If you come back within this grace period, the same session resumes. Set it to 0 to end sessions immediately when the computer locks or sleeps.
+                      </p>
+                      <div class="settingsControlRow">
+                        <input id="lockSleepGraceInput" type="number" min="0" max="60" step="1" />
+                        <span class="settingsSuffix">minutes</span>
+                        <button id="saveLockSleepGraceBtn" class="btn primary" type="button">Save</button>
+                      </div>
+                      <div id="lockSleepGraceStatus" class="settingsStatus" aria-live="polite"></div>
+                    </div>
+                  </div>
+                </section>
+                <section class="settingsSection">
+                  <button type="button" class="panelHeader analyticsToggle settingsToggle" data-analytics-toggle aria-expanded="false">
+                    <div>
                       <div class="settingsLabel">Notification preferences</div>
                       <p class="settingsHelp">
                         Choose which session reminders you want to receive.
